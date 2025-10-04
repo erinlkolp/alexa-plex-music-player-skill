@@ -21,7 +21,7 @@ PLEX_SERVER_NAME = "YOUR_SERVER_NAME"  # Replace with your exact Plex server nam
 
 # Optional: For local network Alexa devices, provide local plex.direct URL for audio streaming
 # This won't affect Lambda connection (which is always remote), but provides better audio URLs for local Alexa
-LOCAL_PLEX_DIRECT_URL = "https://YOUR-IP-ADDRESS-SEPARATED.YOUR_SUBDOMAIN.plex.direct:32400"  # Your local plex.direct URL
+LOCAL_PLEX_DIRECT_URL = "https://YOUR-IP-ADDRESS-SEPARATED.YOUR_SUBDOMAIN.plex.direct:8443"  # Your local plex.direct relay URL
 USE_LOCAL_AUDIO_URL = True  # Set to True when using Alexa devices on your local network
 
 # Set up logging
