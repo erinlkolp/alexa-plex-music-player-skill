@@ -1,5 +1,3 @@
-# main handler for the Alexa skill with AudioPlayer support
-# lambda_function.py
 import logging
 from plexapi.server import PlexServer
 from ask_sdk_core.skill_builder import CustomSkillBuilder

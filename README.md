@@ -2,16 +2,20 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This is a skill that allows a person to playback audio from their Plex Music library on Alexa/Echo devices.
+This is an Alexa skill that allows a person to playback audio from their Plex Music library on Alexa/Echo devices.
 
 ## Features
 
-- **Full Dial API**: Easily change your dial's value, color, name, background image, and more!
-- **Full Admin API**: Provides VU1 Dial Server API key management.
+- **Works Everywhere**: Works on your local LAN as well as remote to the self-hosted Plex server!
 
-## Installation
+## Usage
+
+Create your new Alexa skill. I named mine "Plex Please" but you can call it anything you want. Note: This
+is not linked to your invocation phrase so don't worry about picking something unique!
 
 ![Alexa Skills Dashboard](assets/alexa_developer_console_main_screen.png)
+
+Lambda Example Outputs:
 
 ![Lambda Connecting to Plex](assets/connecting_to_plex_lambda.png)
 
@@ -20,6 +24,9 @@ This is a skill that allows a person to playback audio from their Plex Music lib
 ![Lambda Trigger Example](assets/lambda_trigger_example.png)
 
 ![Lambda Monitor Invocations](assets/lambda_monitor_invocations.png)
+
+**NOTE:** You will need to create or enable hairpin nat on your firewall or gateway. Shown below is my home firewall,
+a Sophos XG firewall, with the correct setting for enablement. On some devices, it may be labeled as "DNS Rebind."
 
 ![Hairpin NAT Rule Example](assets/sophos_hairpin_reflexive_nat_rule.png)
 
