@@ -1,0 +1,2 @@
+plexapi
+ask-sdk-core

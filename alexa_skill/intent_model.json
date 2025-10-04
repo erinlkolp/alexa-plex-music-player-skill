@@ -1,0 +1,167 @@
+{
+    "interactionModel": {
+        "languageModel": {
+            "invocationName": "plex music server",
+            "intents": [
+                {
+                    "name": "AMAZON.CancelIntent",
+                    "samples": []
+                },
+                {
+                    "name": "AMAZON.HelpIntent",
+                    "samples": []
+                },
+                {
+                    "name": "AMAZON.StopIntent",
+                    "samples": []
+                },
+                {
+                    "name": "PlayMusicIntent",
+                    "slots": [
+                        {
+                            "name": "artist",
+                            "type": "CUSTOM_ARTIST"
+                        },
+                        {
+                            "name": "album",
+                            "type": "CUSTOM_ALBUM"
+                        },
+                        {
+                            "name": "track",
+                            "type": "CUSTOM_TRACK"
+                        }
+                    ],
+                    "samples": [
+                        "play the song {track}",
+                        "play the song {track} by {artist}",
+                        "play the album {album}",
+                        "play the album {album} by {artist}",
+                        "play music by the artist {artist}",
+                        "play some songs by {artist}",
+                        "play {artist}",
+                        "play {album}",
+                        "play {track}"
+                    ]
+                },
+                {
+                    "name": "AMAZON.NavigateHomeIntent",
+                    "samples": []
+                },
+                {
+                    "name": "AMAZON.PauseIntent",
+                    "samples": []
+                },
+                {
+                    "name": "AMAZON.ResumeIntent",
+                    "samples": []
+                }
+            ],
+            "types": [
+                {
+                    "name": "CUSTOM_ARTIST",
+                    "values": [
+                        {
+                            "name": {
+                                "value": "The Beatles",
+                                "synonyms": [
+                                    "Beatles"
+                                ]
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Led Zeppelin",
+                                "synonyms": [
+                                    "Zeppelin"
+                                ]
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Pink Floyd",
+                                "synonyms": [
+                                    "Floyd"
+                                ]
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Queen"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "The Rolling Stones",
+                                "synonyms": [
+                                    "Rolling Stones"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "CUSTOM_ALBUM",
+                    "values": [
+                        {
+                            "name": {
+                                "value": "Abbey Road"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Dark Side of the Moon",
+                                "synonyms": [
+                                    "Dark Side"
+                                ]
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Led Zeppelin IV",
+                                "synonyms": [
+                                    "Led Zeppelin Four",
+                                    "Zeppelin Four"
+                                ]
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "A Night at the Opera"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "CUSTOM_TRACK",
+                    "values": [
+                        {
+                            "name": {
+                                "value": "Come Together"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Stairway to Heaven"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Bohemian Rhapsody"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Money"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Here Comes the Sun"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}
