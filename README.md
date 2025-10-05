@@ -33,8 +33,9 @@ Examples of successful invocations:
 1. Create your new Alexa skill. I named mine "Plex Please" but you can call it anything you want. Note: This
 is not linked to your invocation phrase so don't worry about picking something unique!
 2. Set your invocation phrase
-3. Set your endpoint
+3. Set your endpoint - AWS Lambda ARN
 4. Copy the Skill ID for use in the AWS Lambda Trigger phase
+5. Set up the intent model JSON by pasting the json into the AWS Alexa Developer Console
 
 ![Alexa Skills Dashboard](assets/alexa_developer_console_main_screen.png)
 
