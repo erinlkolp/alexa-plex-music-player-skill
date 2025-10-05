@@ -32,6 +32,14 @@
                     "samples": []
                 },
                 {
+                    "name": "AMAZON.ShuffleOnIntent",
+                    "samples": []
+                },
+                {
+                    "name": "AMAZON.ShuffleOffIntent",
+                    "samples": []
+                },
+                {
                     "name": "PlayMusicIntent",
                     "slots": [
                         {
@@ -63,7 +71,10 @@
                         "play {track}",
                         "play playlist {playlist}",
                         "play the playlist {playlist}",
-                        "play my {playlist} playlist"
+                        "play my {playlist} playlist",
+                        "shuffle {artist}",
+                        "shuffle {album}",
+                        "shuffle playlist {playlist}"
                     ]
                 },
                 {
@@ -75,6 +86,16 @@
                 {
                     "name": "CUSTOM_ARTIST",
                     "values": [
+                        {
+                            "name": {
+                                "value": "Suga Free",
+                                "synonyms": [
+                                    "sugar free",
+                                    "suga",
+                                    "sooga free"
+                                ]
+                            }
+                        },
                         {
                             "name": {
                                 "value": "The Beatles",

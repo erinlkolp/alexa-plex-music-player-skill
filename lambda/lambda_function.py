@@ -23,7 +23,6 @@ PLEX_SERVER_NAME = "SERVER_NAME_HERE"
 USE_LOCAL_AUDIO_URL = True
 
 # DynamoDB table name
-# Create table - primary key "user_id" (string)
 DYNAMODB_TABLE_NAME = "PlexAlexaQueue"
 
 # Will be populated automatically from Plex connections
@@ -111,16 +110,17 @@ def get_audio_url(track):
 def get_user_id(handler_input):
     return handler_input.request_envelope.context.system.user.user_id
 
-def save_queue(user_id, tracks, current_index=0):
+def save_queue(user_id, tracks, current_index=0, shuffle=False):
     """Save queue to DynamoDB."""
     try:
         item = {
             'user_id': user_id,
             'tracks': [{'key': int(t.ratingKey), 'title': t.title, 'artist': t.artist().title if hasattr(t, 'artist') else 'Unknown'} for t in tracks],
-            'current_index': int(current_index)
+            'current_index': int(current_index),
+            'shuffle': shuffle
         }
         table.put_item(Item=item)
-        logger.info(f"Saved queue to DynamoDB for user {user_id}: {len(tracks)} tracks, index {current_index}")
+        logger.info(f"Saved queue to DynamoDB for user {user_id}: {len(tracks)} tracks, index {current_index}, shuffle {shuffle}")
     except Exception as e:
         logger.error(f"Error saving queue to DynamoDB: {e}", exc_info=True)
 
@@ -216,6 +216,11 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
             
             logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}, Playlist: {playlist_name}")
 
+            # Check if shuffle is requested (from utterance like "shuffle artist")
+            should_shuffle = "shuffle" in str(handler_input.request_envelope.request.intent).lower()
+            
+            logger.info(f"Shuffle requested: {should_shuffle}")
+
             if not plex or not MUSIC:
                 speech_text = "I couldn't connect to your Plex server. Please check the configuration."
                 return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -241,6 +246,9 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                             speech_text = f"Playing the first 50 tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
                         else:
                             speech_text = f"Playing playlist {matching_playlist.title}."
+                        
+                        if should_shuffle:
+                            speech_text = f"Shuffling playlist {matching_playlist.title}."
                     else:
                         speech_text = f"I couldn't find a playlist named {playlist_name}."
                         return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -264,6 +272,8 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     album = results[0]
                     tracks_to_play = album.tracks()
                     speech_text = f"Playing the album {album.title}."
+                    if should_shuffle:
+                        speech_text = f"Shuffling the album {album.title}."
                 else:
                     speech_text = f"I couldn't find the album {album_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -274,6 +284,8 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     artist = results[0]
                     tracks_to_play = artist.tracks()[:50]
                     speech_text = f"Playing music by {artist.title}."
+                    if should_shuffle:
+                        speech_text = f"Shuffling music by {artist.title}."
                 else:
                     speech_text = f"I couldn't find the artist {artist_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -281,8 +293,15 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 speech_text = "You need to specify what to play. For example, play music by The Beatles, or play playlist Favorites."
                 return handler_input.response_builder.speak(speech_text).ask(speech_text).response
 
+            # Shuffle if requested
+            if should_shuffle and len(tracks_to_play) > 1:
+                import random
+                tracks_to_play = list(tracks_to_play)
+                random.shuffle(tracks_to_play)
+                logger.info(f"Shuffled queue of {len(tracks_to_play)} tracks")
+
             # Save the queue to DynamoDB for next/previous navigation
-            save_queue(user_id, tracks_to_play, 0)
+            save_queue(user_id, tracks_to_play, 0, should_shuffle)
 
             if tracks_to_play:
                 first_track = tracks_to_play[0]
@@ -570,13 +589,74 @@ class ResumeIntentHandler(AbstractRequestHandler):
         speech_text = "Resume is not yet implemented. Please ask me to play something."
         return handler_input.response_builder.speak(speech_text).response
 
+class ShuffleOnIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return is_intent_name("AMAZON.ShuffleOnIntent")(handler_input)
+    
+    def handle(self, handler_input):
+        try:
+            import random
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if not queue_data or not queue_data.get('tracks'):
+                speech_text = "There's no queue to shuffle. Please play something first."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            tracks = queue_data['tracks']
+            current_index = int(queue_data.get('current_index', 0))
+            current_track = tracks[current_index]
+            
+            # Shuffle the tracks
+            random.shuffle(tracks)
+            
+            # Put current track at the beginning
+            tracks = [t for t in tracks if t['key'] != current_track['key']]
+            tracks.insert(0, current_track)
+            
+            # Update queue in DynamoDB
+            queue_data['tracks'] = tracks
+            queue_data['current_index'] = 0
+            queue_data['shuffle'] = True
+            
+            table.put_item(Item=queue_data)
+            
+            speech_text = "Shuffle is now on."
+            return handler_input.response_builder.speak(speech_text).response
+            
+        except Exception as e:
+            logger.error(f"Error in ShuffleOnIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble turning on shuffle."
+            return handler_input.response_builder.speak(speech_text).response
+
+class ShuffleOffIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return is_intent_name("AMAZON.ShuffleOffIntent")(handler_input)
+    
+    def handle(self, handler_input):
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if queue_data:
+                queue_data['shuffle'] = False
+                table.put_item(Item=queue_data)
+            
+            speech_text = "Shuffle is now off. Note: The current queue order won't change, but new content will play in order."
+            return handler_input.response_builder.speak(speech_text).response
+            
+        except Exception as e:
+            logger.error(f"Error in ShuffleOffIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble turning off shuffle."
+            return handler_input.response_builder.speak(speech_text).response
+
 class HelpIntentHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.HelpIntent")(handler_input)
 
     def handle(self, handler_input):
         try:
-            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, play the album Abbey Road, or play playlist Favorites. You can also say next, previous, pause, or stop to control playback."
+            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, play the album Abbey Road, or play playlist Favorites. You can also say shuffle, next, previous, pause, or stop to control playback."
             return handler_input.response_builder.speak(speech_text).ask(speech_text).response
         except Exception as e:
             logger.error(f"Error in HelpIntentHandler: {e}", exc_info=True)
@@ -636,6 +716,8 @@ sb.add_request_handler(PlaybackStoppedHandler())
 sb.add_request_handler(PlaybackFailedHandler())
 sb.add_request_handler(PauseIntentHandler())
 sb.add_request_handler(ResumeIntentHandler())
+sb.add_request_handler(ShuffleOnIntentHandler())
+sb.add_request_handler(ShuffleOffIntentHandler())
 sb.add_request_handler(HelpIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_request_handler(SessionEndedRequestHandler())
