@@ -2,7 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This is an Alexa skill that allows a person to playback audio from their Plex Music library on Alexa/Echo devices.
+![Header Image](assets/header_image.png)
+
+This is an Alexa skill that allows playback of audio from their Plex Music library on Alexa/Echo devices.
 
 ## Features
 
