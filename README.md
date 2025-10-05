@@ -22,24 +22,34 @@ This is an Alexa skill that allows playback of audio from their Plex Music libra
 
 Instructions go here...
 
+Examples of successful invocations:
+
 ![Lambda Connecting to Plex](assets/connecting_to_plex_lambda.png)
 
 ![Lambda Playing Audio](assets/playing_audio_lambda.png)
 
 ### Create your Alexa Skill
 
-Create your new Alexa skill. I named mine "Plex Please" but you can call it anything you want. Note: This
+1. Create your new Alexa skill. I named mine "Plex Please" but you can call it anything you want. Note: This
 is not linked to your invocation phrase so don't worry about picking something unique!
+2. Set your invocation phrase
+3. Set your endpoint
+4. Copy the Skill ID for use in the AWS Lambda Trigger phase
 
 ![Alexa Skills Dashboard](assets/alexa_developer_console_main_screen.png)
 
 ### Set up the AWS Lambda Trigger
+
+1. Add an AWS Lambda Trigger, type: Alexa Skill
+2. Paste the skill id in the box
 
 ![Lambda Trigger Example](assets/lambda_trigger_example.png)
 
 ### Monitor Invocations
 
 ![Lambda Monitor Invocations](assets/lambda_monitor_invocations.png)
+
+### For Local Use!
 
 **NOTE:** You will need to create or enable hairpin nat on your firewall or gateway. Shown below is my home firewall,
 a Sophos XG unit, with the correct setting for enablement. On some devices, it may be labeled as "DNS Rebind."
