@@ -1,2 +1,3 @@
 plexapi
 ask-sdk-core
+boto3

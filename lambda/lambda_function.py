@@ -1,4 +1,6 @@
 import logging
+import boto3
+from decimal import Decimal
 from plexapi.server import PlexServer
 from ask_sdk_core.skill_builder import CustomSkillBuilder
 from ask_sdk_core.handler_input import HandlerInput
@@ -14,20 +16,25 @@ from ask_sdk_model.interfaces.audioplayer import (
 )
 
 # Configure these with your Plex server details
-PLEX_TOKEN = "PLEX_TOKEN_HERE"
+PLEX_TOKEN = "TOKEN_GOES_HERE"
 PLEX_SERVER_NAME = "SERVER_NAME_HERE"
 
 # Automatically use relay URL for local playback
 USE_LOCAL_AUDIO_URL = True
 
+# DynamoDB table name
+# Create table - primary key "user_id" (string)
+DYNAMODB_TABLE_NAME = "PlexAlexaQueue"
+
 # Will be populated automatically from Plex connections
 LOCAL_RELAY_URL = None
 
-# Track queue storage (in memory - persists while Lambda is warm)
-track_queues = {}
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Initialize DynamoDB
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(DYNAMODB_TABLE_NAME)
 
 plex = None
 MUSIC = None
@@ -105,18 +112,47 @@ def get_user_id(handler_input):
     return handler_input.request_envelope.context.system.user.user_id
 
 def save_queue(user_id, tracks, current_index=0):
-    track_queues[user_id] = {
-        'tracks': [{'key': t.ratingKey, 'title': t.title, 'artist': t.artist().title if hasattr(t, 'artist') else 'Unknown'} for t in tracks],
-        'current_index': current_index
-    }
-    logger.info(f"Saved queue for user {user_id}: {len(tracks)} tracks, index {current_index}")
+    """Save queue to DynamoDB."""
+    try:
+        item = {
+            'user_id': user_id,
+            'tracks': [{'key': int(t.ratingKey), 'title': t.title, 'artist': t.artist().title if hasattr(t, 'artist') else 'Unknown'} for t in tracks],
+            'current_index': int(current_index)
+        }
+        table.put_item(Item=item)
+        logger.info(f"Saved queue to DynamoDB for user {user_id}: {len(tracks)} tracks, index {current_index}")
+    except Exception as e:
+        logger.error(f"Error saving queue to DynamoDB: {e}", exc_info=True)
 
 def get_queue(user_id):
-    return track_queues.get(user_id)
+    """Get queue from DynamoDB."""
+    try:
+        response = table.get_item(Key={'user_id': user_id})
+        if 'Item' in response:
+            logger.info(f"Retrieved queue from DynamoDB for user {user_id}")
+            return response['Item']
+        else:
+            logger.info(f"No queue found in DynamoDB for user {user_id}")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting queue from DynamoDB: {e}", exc_info=True)
+        return None
+
+def update_queue_index(user_id, new_index):
+    """Update just the current index in DynamoDB."""
+    try:
+        table.update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET current_index = :index',
+            ExpressionAttributeValues={':index': int(new_index)}
+        )
+        logger.info(f"Updated queue index for user {user_id} to {new_index}")
+    except Exception as e:
+        logger.error(f"Error updating queue index in DynamoDB: {e}", exc_info=True)
 
 def get_track_by_key(rating_key):
     try:
-        return plex.fetchItem(rating_key)
+        return plex.fetchItem(int(rating_key))
     except Exception as e:
         logger.error(f"Error fetching track {rating_key}: {e}")
         return None
@@ -245,7 +281,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 speech_text = "You need to specify what to play. For example, play music by The Beatles, or play playlist Favorites."
                 return handler_input.response_builder.speak(speech_text).ask(speech_text).response
 
-            # Save the queue for next/previous navigation
+            # Save the queue to DynamoDB for next/previous navigation
             save_queue(user_id, tracks_to_play, 0)
 
             if tracks_to_play:
@@ -298,7 +334,7 @@ class NextIntentHandler(AbstractRequestHandler):
                 speech_text = "There's no queue. Please play something first."
                 return handler_input.response_builder.speak(speech_text).response
             
-            current_index = queue_data.get('current_index', 0)
+            current_index = int(queue_data.get('current_index', 0))
             tracks = queue_data['tracks']
             
             next_index = current_index + 1
@@ -307,8 +343,8 @@ class NextIntentHandler(AbstractRequestHandler):
                 speech_text = "You've reached the end of the queue."
                 return handler_input.response_builder.speak(speech_text).response
             
-            queue_data['current_index'] = next_index
-            track_queues[user_id] = queue_data
+            # Update index in DynamoDB
+            update_queue_index(user_id, next_index)
             
             track_info = tracks[next_index]
             track = get_track_by_key(track_info['key'])
@@ -361,7 +397,7 @@ class PreviousIntentHandler(AbstractRequestHandler):
                 speech_text = "There's no queue. Please play something first."
                 return handler_input.response_builder.speak(speech_text).response
             
-            current_index = queue_data.get('current_index', 0)
+            current_index = int(queue_data.get('current_index', 0))
             tracks = queue_data['tracks']
             
             prev_index = current_index - 1
@@ -370,8 +406,8 @@ class PreviousIntentHandler(AbstractRequestHandler):
                 speech_text = "You're at the beginning of the queue."
                 return handler_input.response_builder.speak(speech_text).response
             
-            queue_data['current_index'] = prev_index
-            track_queues[user_id] = queue_data
+            # Update index in DynamoDB
+            update_queue_index(user_id, prev_index)
             
             track_info = tracks[prev_index]
             track = get_track_by_key(track_info['key'])
@@ -418,6 +454,82 @@ class PlaybackStartedHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         logger.info("Playback started")
         return handler_input.response_builder.response
+
+class PlaybackNearlyFinishedHandler(AbstractRequestHandler):
+    """Handler for AudioPlayer.PlaybackNearlyFinished - Auto-queue next track."""
+    def can_handle(self, handler_input):
+        return is_request_type("AudioPlayer.PlaybackNearlyFinished")(handler_input)
+    
+    def handle(self, handler_input):
+        try:
+            # Get the current track token from the request
+            current_token = handler_input.request_envelope.request.token
+            user_id = get_user_id(handler_input)
+            
+            logger.info(f"Playback nearly finished for track token: {current_token}")
+            
+            # Get queue from DynamoDB
+            queue_data = get_queue(user_id)
+            
+            if not queue_data or not queue_data.get('tracks'):
+                logger.info("No queue found, not enqueuing next track")
+                return handler_input.response_builder.response
+            
+            current_index = int(queue_data.get('current_index', 0))
+            tracks = queue_data['tracks']
+            
+            # Calculate next track index
+            next_index = current_index + 1
+            
+            if next_index >= len(tracks):
+                logger.info("Reached end of queue, not enqueuing")
+                return handler_input.response_builder.response
+            
+            # Update index in DynamoDB
+            update_queue_index(user_id, next_index)
+            
+            # Get next track
+            track_info = tracks[next_index]
+            track = get_track_by_key(track_info['key'])
+            
+            if not track:
+                logger.error("Could not fetch next track from Plex")
+                return handler_input.response_builder.response
+            
+            audio_url = get_audio_url(track)
+            logger.info(f"Auto-queuing next track: {track.title}")
+            
+            # Create metadata
+            metadata = AudioItemMetadata(
+                title=track.title,
+                subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
+            )
+            
+            # Create stream
+            stream = Stream(
+                token=str(track.ratingKey),
+                url=audio_url,
+                offset_in_milliseconds=0,
+                expected_previous_token=current_token
+            )
+            
+            # Create audio item
+            audio_item = AudioItem(
+                stream=stream,
+                metadata=metadata
+            )
+            
+            # Create play directive with ENQUEUE behavior
+            play_directive = PlayDirective(
+                play_behavior=PlayBehavior.ENQUEUE,
+                audio_item=audio_item
+            )
+            
+            return handler_input.response_builder.add_directive(play_directive).response
+            
+        except Exception as e:
+            logger.error(f"Error in PlaybackNearlyFinishedHandler: {e}", exc_info=True)
+            return handler_input.response_builder.response
 
 class PlaybackFinishedHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
@@ -518,6 +630,7 @@ sb.add_request_handler(PlayMusicIntentHandler())
 sb.add_request_handler(NextIntentHandler())
 sb.add_request_handler(PreviousIntentHandler())
 sb.add_request_handler(PlaybackStartedHandler())
+sb.add_request_handler(PlaybackNearlyFinishedHandler())
 sb.add_request_handler(PlaybackFinishedHandler())
 sb.add_request_handler(PlaybackStoppedHandler())
 sb.add_request_handler(PlaybackFailedHandler())
