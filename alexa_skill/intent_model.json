@@ -29,6 +29,10 @@
                         {
                             "name": "track",
                             "type": "CUSTOM_TRACK"
+                        },
+                        {
+                            "name": "playlist",
+                            "type": "CUSTOM_PLAYLIST"
                         }
                     ],
                     "samples": [
@@ -40,7 +44,10 @@
                         "play some songs by {artist}",
                         "play {artist}",
                         "play {album}",
-                        "play {track}"
+                        "play {track}",
+                        "play playlist {playlist}",
+                        "play the playlist {playlist}",
+                        "play my {playlist} playlist"
                     ]
                 },
                 {
@@ -157,6 +164,26 @@
                         {
                             "name": {
                                 "value": "Here Comes the Sun"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "CUSTOM_PLAYLIST",
+                    "values": [
+                        {
+                            "name": {
+                                "value": "Favorites"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Workout"
+                            }
+                        },
+                        {
+                            "name": {
+                                "value": "Chill"
                             }
                         }
                     ]

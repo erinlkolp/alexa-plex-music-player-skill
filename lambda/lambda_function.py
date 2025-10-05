@@ -14,12 +14,12 @@ from ask_sdk_model.interfaces.audioplayer import (
 )
 
 # Configure these with your Plex server details
-PLEX_TOKEN = "YOUR_PLEX_TOKEN"  # Replace with your Plex authentication token
-PLEX_SERVER_NAME = "YOUR_SERVER_NAME"  # Replace with your exact Plex server name
+PLEX_TOKEN = "TOKEN_GOES_HERE"  # Replace with your Plex authentication token
+PLEX_SERVER_NAME = "SERVER_NAME_HERE"  # Replace with your exact Plex server name
 
 # Optional: For local network Alexa devices, provide local plex.direct URL for audio streaming
 # This won't affect Lambda connection (which is always remote), but provides better audio URLs for local Alexa
-LOCAL_PLEX_DIRECT_URL = "https://YOUR-IP-ADDRESS-SEPARATED.YOUR_SUBDOMAIN.plex.direct:8443"  # Your local plex.direct relay URL
+LOCAL_PLEX_DIRECT_URL = "https://IP-ADDRESS-GOES-HERE.SUBDOMAIN_GOES_HERE.plex.direct:8443"  # Your local plex.direct relay URL
 USE_LOCAL_AUDIO_URL = True  # Set to True when using Alexa devices on your local network
 
 # Set up logging
@@ -174,15 +174,41 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 if slot and hasattr(slot, 'value') and slot.value:
                     track_name = slot.value
             
-            logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}")
+            playlist_name = None
+            if slots and "playlist" in slots:
+                slot = slots["playlist"]
+                if slot and hasattr(slot, 'value') and slot.value:
+                    playlist_name = slot.value
+            
+            logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}, Playlist: {playlist_name}")            
 
             if not plex or not MUSIC:
                 speech_text = "I couldn't connect to your Plex server. Please check the configuration."
                 return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
-            
+
             tracks_to_play = []
             
-            if track_name:
+            if playlist_name:
+                try:
+                    playlists = plex.playlists()
+                    matching_playlist = None
+                    for playlist in playlists:
+                        if playlist_name.lower() in playlist.title.lower():
+                            matching_playlist = playlist
+                            break
+                    
+                    if matching_playlist:
+                        tracks_to_play = matching_playlist.items()
+                        speech_text = f"Playing playlist {matching_playlist.title}."
+                    else:
+                        speech_text = f"I couldn't find a playlist named {playlist_name}."
+                        return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
+                except Exception as e:
+                    logger.error(f"Error searching playlists: {e}")
+                    speech_text = f"I had trouble searching for the playlist {playlist_name}."
+                    return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
+            
+            elif track_name:                
                 results = MUSIC.searchTracks(title=track_name)
                 if results:
                     tracks_to_play = [results[0]]
@@ -320,7 +346,7 @@ class HelpIntentHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         try:
-            speech_text = "You can ask me to play a song, album, or artist from your Plex server. For example, say play The Beatles, or play the album Abbey Road. You can also say pause or stop to control playback."
+            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, or play the album Abbey Road. You can also say pause or stop to control playback."
             return handler_input.response_builder.speak(speech_text).ask(speech_text).response
         except Exception as e:
             logger.error(f"Error in HelpIntentHandler: {e}", exc_info=True)
@@ -331,15 +357,13 @@ class CancelOrStopIntentHandler(AbstractRequestHandler):
     """Handler for Cancel and Stop Intents."""
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return (is_intent_name("AMAZON.CancelIntent")(handler_input) or
-                is_intent_name("AMAZON.StopIntent")(handler_input))
+        return (is_intent_name("AMAZON.CancelIntent")(handler_input) or is_intent_name("AMAZON.StopIntent")(handler_input))
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         try:
             speech_text = "Goodbye!"
-            return handler_input.response_builder.speak(speech_text).add_directive(
-                StopDirective()).set_should_end_session(True).response
+            return handler_input.response_builder.speak(speech_text).add_directive(StopDirective()).set_should_end_session(True).response
         except Exception as e:
             logger.error(f"Error in CancelOrStopIntentHandler: {e}", exc_info=True)
             return handler_input.response_builder.speak("Goodbye").set_should_end_session(True).response
