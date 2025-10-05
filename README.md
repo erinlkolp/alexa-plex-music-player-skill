@@ -11,6 +11,7 @@ This is an Alexa skill that allows playback of audio from their Plex Music libra
 - **Full Plex Integration**: tracks, albums, artists, playlists
 - **Continuous Playback**:
 - **Next/Previous Controls**:
+- **Shuffle Supported**:
 - **Persistent Queue**: uses DynamoDB for persistent queue
 - **Automatic Relay Detection**: works for local playback and remote!
 - **Works Across Alexa Devices**: tested on Alexa and Echo devices
