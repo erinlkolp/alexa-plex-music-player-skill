@@ -20,7 +20,15 @@ This is an Alexa skill that allows playback of audio from their Plex Music libra
 
 ### Create your AWS Lambda
 
-Instructions go here...
+1. Create a new AWS Lambda using the latest Python runtime
+2. Copy and paste your PLEX TOKEN and your PLEX SERVER NAME into the lambda_function.py code
+3. Prepare dependencies
+  1. cd lambda/
+  2. pip install -r requirements.txt -t ./
+4. Zip the newly minted lambda
+  1. zip -r ../archive.zip ./*
+5. Upload archive.zip to the AWS Lambda Console
+6. Deploy your new code!
 
 Examples of successful invocations:
 
