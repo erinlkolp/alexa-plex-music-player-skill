@@ -4,7 +4,7 @@
 
 ![Header Image](assets/header_image.png)
 
-This is an Alexa skill that allows playback of audio from their Plex Music library on Alexa/Echo devices.
+This is an Alexa skill that allows playback of audio from their Plex Music library on Alexa/Echo devices. I was tired of the official Alexa -> Plex integration failing to play what I wanted to hear. It's buggy and that's being nice.
 
 ## Features
 
@@ -18,23 +18,31 @@ This is an Alexa skill that allows playback of audio from their Plex Music libra
 
 ## Usage
 
-Create your new Alexa skill. I named mine "Plex Please" but you can call it anything you want. Note: This
-is not linked to your invocation phrase so don't worry about picking something unique!
+### Create your AWS Lambda
 
-![Alexa Skills Dashboard](assets/alexa_developer_console_main_screen.png)
-
-Lambda Example Outputs:
+Instructions go here...
 
 ![Lambda Connecting to Plex](assets/connecting_to_plex_lambda.png)
 
 ![Lambda Playing Audio](assets/playing_audio_lambda.png)
 
+### Create your Alexa Skill
+
+Create your new Alexa skill. I named mine "Plex Please" but you can call it anything you want. Note: This
+is not linked to your invocation phrase so don't worry about picking something unique!
+
+![Alexa Skills Dashboard](assets/alexa_developer_console_main_screen.png)
+
+### Set up the AWS Lambda Trigger
+
 ![Lambda Trigger Example](assets/lambda_trigger_example.png)
+
+### Monitor Invocations
 
 ![Lambda Monitor Invocations](assets/lambda_monitor_invocations.png)
 
 **NOTE:** You will need to create or enable hairpin nat on your firewall or gateway. Shown below is my home firewall,
-a Sophos XG firewall, with the correct setting for enablement. On some devices, it may be labeled as "DNS Rebind."
+a Sophos XG unit, with the correct setting for enablement. On some devices, it may be labeled as "DNS Rebind."
 
 ![Hairpin NAT Rule Example](assets/sophos_hairpin_reflexive_nat_rule.png)
 
