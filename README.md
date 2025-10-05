@@ -1,4 +1,4 @@
-# kolpfamily-plex-alexa-skill
+# alexa-plex-music-player-skill
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
