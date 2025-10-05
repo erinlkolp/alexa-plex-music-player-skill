@@ -6,7 +6,13 @@ This is an Alexa skill that allows a person to playback audio from their Plex Mu
 
 ## Features
 
-- **Works Everywhere**: Works on your local LAN as well as remote to the self-hosted Plex server!
+- **Full Plex Integration**: tracks, albums, artists, playlists
+- **Continuous Playback**:
+- **Next/Previous Controls**:
+- **Persistent Queue**: uses DynamoDB for persistent queue
+- **Automatic Relay Detection**: works for local playback and remote!
+- **Works Across Alexa Devices**: tested on Alexa and Echo devices
+- **Handles Large Playlists**: no lambda/queue timeouts!
 
 ## Usage
 
