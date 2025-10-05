@@ -14,19 +14,21 @@ from ask_sdk_model.interfaces.audioplayer import (
 )
 
 # Configure these with your Plex server details
-PLEX_TOKEN = "TOKEN_GOES_HERE"  # Replace with your Plex authentication token
-PLEX_SERVER_NAME = "SERVER_NAME_HERE"  # Replace with your exact Plex server name
+PLEX_TOKEN = "PLEX_TOKEN_HERE"
+PLEX_SERVER_NAME = "SERVER_NAME_HERE"
 
-# Optional: For local network Alexa devices, provide local plex.direct URL for audio streaming
-# This won't affect Lambda connection (which is always remote), but provides better audio URLs for local Alexa
-LOCAL_PLEX_DIRECT_URL = "https://IP-ADDRESS-GOES-HERE.SUBDOMAIN_GOES_HERE.plex.direct:8443"  # Your local plex.direct relay URL
-USE_LOCAL_AUDIO_URL = True  # Set to True when using Alexa devices on your local network
+# Automatically use relay URL for local playback
+USE_LOCAL_AUDIO_URL = True
 
-# Set up logging
+# Will be populated automatically from Plex connections
+LOCAL_RELAY_URL = None
+
+# Track queue storage (in memory - persists while Lambda is warm)
+track_queues = {}
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Initialize Plex server connection
 plex = None
 MUSIC = None
 
@@ -34,33 +36,36 @@ try:
     from plexapi.myplex import MyPlexAccount
     from plexapi.server import PlexServer
     
-    # Connect through Plex.tv account for secure HTTPS connections
-    # Lambda always uses remote connection since it can't access local networks
     logger.info("Connecting to Plex via MyPlexAccount...")
     account = MyPlexAccount(token=PLEX_TOKEN)
     
-    # Debug: List all available servers
     logger.info("Available Plex servers:")
     for resource in account.resources():
         logger.info(f"  Server: {resource.name}")
-        # Log all available connections
         for conn in resource.connections:
             logger.info(f"    Connection: {conn.uri} (local: {conn.local}, relay: {conn.relay})")
     
-    # Get your specific server
     logger.info(f"Attempting to connect to server: {PLEX_SERVER_NAME}")
     server_resource = account.resource(PLEX_SERVER_NAME)
     
-    # Lambda must use public/remote connection (not local, not relay)
+    # Find direct public connection for Lambda
     direct_connection = None
+    relay_connection = None
+    
     for conn in server_resource.connections:
         if not conn.local and not conn.relay:
             direct_connection = conn.uri
             logger.info(f"Found direct public connection: {direct_connection}")
-            break
+        elif conn.relay:
+            relay_connection = conn.uri
+            logger.info(f"Found relay connection: {relay_connection}")
+    
+    # Store relay URL for local audio playback
+    if relay_connection:
+        LOCAL_RELAY_URL = relay_connection
+        logger.info(f"Using relay URL for local audio: {LOCAL_RELAY_URL}")
     
     if direct_connection:
-        # Connect directly using the public HTTPS URL
         plex = PlexServer(direct_connection, PLEX_TOKEN, timeout=15)
         logger.info(f"Successfully connected to: {direct_connection}")
     else:
@@ -75,61 +80,58 @@ except Exception as e:
     MUSIC = None
 
 def get_audio_url(track):
-    """Get the direct streaming URL for a track (not HLS/m3u8)."""
     try:
-        # Determine which base URL to use for audio streaming
-        # Lambda always connects via remote, but we can provide local URLs to Alexa for better performance
-        if USE_LOCAL_AUDIO_URL and LOCAL_PLEX_DIRECT_URL:
-            base_url = LOCAL_PLEX_DIRECT_URL
-            logger.info(f"Using local plex.direct URL for audio streaming: {base_url}")
+        # Use relay URL if configured for local playback, otherwise use remote
+        if USE_LOCAL_AUDIO_URL and LOCAL_RELAY_URL:
+            base_url = LOCAL_RELAY_URL
+            logger.info(f"Using relay URL for audio streaming: {base_url}")
         else:
             base_url = plex._baseurl
             logger.info(f"Using remote URL for audio streaming: {base_url}")
         
-        # Get the direct media URL
         if track.media and len(track.media) > 0:
             media = track.media[0]
             if media.parts and len(media.parts) > 0:
                 part = media.parts[0]
-                
-                # Check the container/codec
-                container = media.container if hasattr(media, 'container') else 'unknown'
-                codec = media.audioCodec if hasattr(media, 'audioCodec') else 'unknown'
-                bitrate = media.bitrate if hasattr(media, 'bitrate') else 'unknown'
-                logger.info(f"Track format - Container: {container}, Codec: {codec}, Bitrate: {bitrate}")
-                
-                # Use direct file URL - back to what was working
                 direct_url = f"{base_url}{part.key}?X-Plex-Token={PLEX_TOKEN}"
-                logger.info(f"Direct audio URL: {direct_url}")
                 return direct_url
         
-        # Fallback to stream URL if direct URL fails
-        logger.warning("Could not get direct URL, falling back to stream URL")
-        media_url = track.getStreamURL()
-        logger.info(f"Fallback stream URL: {media_url}")
-        return media_url
-        
+        return track.getStreamURL()
     except Exception as e:
         logger.error(f"Error getting audio URL: {e}", exc_info=True)
-        # Last resort fallback
         return track.getStreamURL()
 
+def get_user_id(handler_input):
+    return handler_input.request_envelope.context.system.user.user_id
+
+def save_queue(user_id, tracks, current_index=0):
+    track_queues[user_id] = {
+        'tracks': [{'key': t.ratingKey, 'title': t.title, 'artist': t.artist().title if hasattr(t, 'artist') else 'Unknown'} for t in tracks],
+        'current_index': current_index
+    }
+    logger.info(f"Saved queue for user {user_id}: {len(tracks)} tracks, index {current_index}")
+
+def get_queue(user_id):
+    return track_queues.get(user_id)
+
+def get_track_by_key(rating_key):
+    try:
+        return plex.fetchItem(rating_key)
+    except Exception as e:
+        logger.error(f"Error fetching track {rating_key}: {e}")
+        return None
+
 class LaunchRequestHandler(AbstractRequestHandler):
-    """Handler for Skill Launch."""
     def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
         return is_request_type("LaunchRequest")(handler_input)
 
     def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
         try:
-            # Check Plex connection status and inform user
             if not plex or not MUSIC:
                 speech_text = "Warning: I couldn't connect to your Plex server. Please check your configuration and try again later."
                 return handler_input.response_builder.speak(speech_text).set_card(
                     SimpleCard("Plex Connection Error", speech_text)).set_should_end_session(True).response
             
-            # Connection successful
             speech_text = "Plex Music is ready. You can ask me to play music from your Plex server."
             reprompt_text = "You can say, for example, play music by Queen, or play the album Abbey Road."
             
@@ -141,24 +143,21 @@ class LaunchRequestHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
 
 class PlayMusicIntentHandler(AbstractRequestHandler):
-    """Handler for Play Music Intent."""
     def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
         return is_intent_name("PlayMusicIntent")(handler_input)
 
     def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
         speech_text = "Sorry, something went wrong."
         
         try:
             slots = handler_input.request_envelope.request.intent.slots
+            user_id = get_user_id(handler_input)
             
-            # Safer slot value extraction
             artist_name = None
             album_name = None
             track_name = None
+            playlist_name = None
             
-            # Check each slot carefully
             if slots and "artist" in slots:
                 slot = slots["artist"]
                 if slot and hasattr(slot, 'value') and slot.value:
@@ -174,18 +173,17 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 if slot and hasattr(slot, 'value') and slot.value:
                     track_name = slot.value
             
-            playlist_name = None
             if slots and "playlist" in slots:
                 slot = slots["playlist"]
                 if slot and hasattr(slot, 'value') and slot.value:
                     playlist_name = slot.value
             
-            logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}, Playlist: {playlist_name}")            
+            logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}, Playlist: {playlist_name}")
 
             if not plex or not MUSIC:
                 speech_text = "I couldn't connect to your Plex server. Please check the configuration."
                 return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
-
+            
             tracks_to_play = []
             
             if playlist_name:
@@ -198,8 +196,15 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                             break
                     
                     if matching_playlist:
-                        tracks_to_play = matching_playlist.items()
-                        speech_text = f"Playing playlist {matching_playlist.title}."
+                        # Limit playlist to 50 tracks to avoid timeout
+                        all_tracks = matching_playlist.items()
+                        tracks_to_play = all_tracks[:50]
+                        total_tracks = len(all_tracks)
+                        
+                        if total_tracks > 50:
+                            speech_text = f"Playing the first 50 tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
+                        else:
+                            speech_text = f"Playing playlist {matching_playlist.title}."
                     else:
                         speech_text = f"I couldn't find a playlist named {playlist_name}."
                         return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -208,7 +213,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     speech_text = f"I had trouble searching for the playlist {playlist_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
             
-            elif track_name:                
+            elif track_name:
                 results = MUSIC.searchTracks(title=track_name)
                 if results:
                     tracks_to_play = [results[0]]
@@ -231,43 +236,40 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 results = MUSIC.searchArtists(title=artist_name)
                 if results:
                     artist = results[0]
-                    # Get all tracks from the artist (limit to 50 for performance)
                     tracks_to_play = artist.tracks()[:50]
                     speech_text = f"Playing music by {artist.title}."
                 else:
                     speech_text = f"I couldn't find the artist {artist_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
             else:
-                speech_text = "You need to specify what to play. For example, play music by The Beatles."
+                speech_text = "You need to specify what to play. For example, play music by The Beatles, or play playlist Favorites."
                 return handler_input.response_builder.speak(speech_text).ask(speech_text).response
 
-            # Play the first track using AudioPlayer
+            # Save the queue for next/previous navigation
+            save_queue(user_id, tracks_to_play, 0)
+
             if tracks_to_play:
                 first_track = tracks_to_play[0]
                 audio_url = get_audio_url(first_track)
                 
                 logger.info(f"Playing track: {first_track.title} from URL: {audio_url}")
                 
-                # Create metadata
                 metadata = AudioItemMetadata(
                     title=first_track.title,
                     subtitle=first_track.artist().title if hasattr(first_track, 'artist') else "Unknown Artist"
                 )
                 
-                # Create stream
                 stream = Stream(
                     token=str(first_track.ratingKey),
                     url=audio_url,
                     offset_in_milliseconds=0
                 )
                 
-                # Create audio item
                 audio_item = AudioItem(
                     stream=stream,
                     metadata=metadata
                 )
                 
-                # Create play directive
                 play_directive = PlayDirective(
                     play_behavior=PlayBehavior.REPLACE_ALL,
                     audio_item=audio_item
@@ -283,8 +285,133 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
 
         return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
 
+class NextIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return is_intent_name("AMAZON.NextIntent")(handler_input)
+    
+    def handle(self, handler_input):
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if not queue_data or not queue_data.get('tracks'):
+                speech_text = "There's no queue. Please play something first."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            current_index = queue_data.get('current_index', 0)
+            tracks = queue_data['tracks']
+            
+            next_index = current_index + 1
+            
+            if next_index >= len(tracks):
+                speech_text = "You've reached the end of the queue."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            queue_data['current_index'] = next_index
+            track_queues[user_id] = queue_data
+            
+            track_info = tracks[next_index]
+            track = get_track_by_key(track_info['key'])
+            
+            if not track:
+                speech_text = "Sorry, I couldn't load the next track."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            audio_url = get_audio_url(track)
+            logger.info(f"Playing next track: {track.title}")
+            
+            metadata = AudioItemMetadata(
+                title=track.title,
+                subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
+            )
+            
+            stream = Stream(
+                token=str(track.ratingKey),
+                url=audio_url,
+                offset_in_milliseconds=0
+            )
+            
+            audio_item = AudioItem(
+                stream=stream,
+                metadata=metadata
+            )
+            
+            play_directive = PlayDirective(
+                play_behavior=PlayBehavior.REPLACE_ALL,
+                audio_item=audio_item
+            )
+            
+            return handler_input.response_builder.add_directive(play_directive).response
+            
+        except Exception as e:
+            logger.error(f"Error in NextIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble skipping to the next track."
+            return handler_input.response_builder.speak(speech_text).response
+
+class PreviousIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return is_intent_name("AMAZON.PreviousIntent")(handler_input)
+    
+    def handle(self, handler_input):
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if not queue_data or not queue_data.get('tracks'):
+                speech_text = "There's no queue. Please play something first."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            current_index = queue_data.get('current_index', 0)
+            tracks = queue_data['tracks']
+            
+            prev_index = current_index - 1
+            
+            if prev_index < 0:
+                speech_text = "You're at the beginning of the queue."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            queue_data['current_index'] = prev_index
+            track_queues[user_id] = queue_data
+            
+            track_info = tracks[prev_index]
+            track = get_track_by_key(track_info['key'])
+            
+            if not track:
+                speech_text = "Sorry, I couldn't load the previous track."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            audio_url = get_audio_url(track)
+            logger.info(f"Playing previous track: {track.title}")
+            
+            metadata = AudioItemMetadata(
+                title=track.title,
+                subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
+            )
+            
+            stream = Stream(
+                token=str(track.ratingKey),
+                url=audio_url,
+                offset_in_milliseconds=0
+            )
+            
+            audio_item = AudioItem(
+                stream=stream,
+                metadata=metadata
+            )
+            
+            play_directive = PlayDirective(
+                play_behavior=PlayBehavior.REPLACE_ALL,
+                audio_item=audio_item
+            )
+            
+            return handler_input.response_builder.add_directive(play_directive).response
+            
+        except Exception as e:
+            logger.error(f"Error in PreviousIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble going back to the previous track."
+            return handler_input.response_builder.speak(speech_text).response
+
 class PlaybackStartedHandler(AbstractRequestHandler):
-    """Handler for AudioPlayer.PlaybackStarted."""
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackStarted")(handler_input)
     
@@ -293,7 +420,6 @@ class PlaybackStartedHandler(AbstractRequestHandler):
         return handler_input.response_builder.response
 
 class PlaybackFinishedHandler(AbstractRequestHandler):
-    """Handler for AudioPlayer.PlaybackFinished."""
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackFinished")(handler_input)
     
@@ -302,7 +428,6 @@ class PlaybackFinishedHandler(AbstractRequestHandler):
         return handler_input.response_builder.response
 
 class PlaybackStoppedHandler(AbstractRequestHandler):
-    """Handler for AudioPlayer.PlaybackStopped."""
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackStopped")(handler_input)
     
@@ -311,7 +436,6 @@ class PlaybackStoppedHandler(AbstractRequestHandler):
         return handler_input.response_builder.response
 
 class PlaybackFailedHandler(AbstractRequestHandler):
-    """Handler for AudioPlayer.PlaybackFailed."""
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackFailed")(handler_input)
     
@@ -320,7 +444,6 @@ class PlaybackFailedHandler(AbstractRequestHandler):
         return handler_input.response_builder.response
 
 class PauseIntentHandler(AbstractRequestHandler):
-    """Handler for AMAZON.PauseIntent."""
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.PauseIntent")(handler_input)
     
@@ -328,25 +451,20 @@ class PauseIntentHandler(AbstractRequestHandler):
         return handler_input.response_builder.add_directive(StopDirective()).response
 
 class ResumeIntentHandler(AbstractRequestHandler):
-    """Handler for AMAZON.ResumeIntent."""
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.ResumeIntent")(handler_input)
     
     def handle(self, handler_input):
-        # Note: Resume functionality would require storing playback state
         speech_text = "Resume is not yet implemented. Please ask me to play something."
         return handler_input.response_builder.speak(speech_text).response
 
 class HelpIntentHandler(AbstractRequestHandler):
-    """Handler for Help Intent."""
     def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.HelpIntent")(handler_input)
 
     def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
         try:
-            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, or play the album Abbey Road. You can also say pause or stop to control playback."
+            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, play the album Abbey Road, or play playlist Favorites. You can also say next, previous, pause, or stop to control playback."
             return handler_input.response_builder.speak(speech_text).ask(speech_text).response
         except Exception as e:
             logger.error(f"Error in HelpIntentHandler: {e}", exc_info=True)
@@ -354,28 +472,24 @@ class HelpIntentHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
 
 class CancelOrStopIntentHandler(AbstractRequestHandler):
-    """Handler for Cancel and Stop Intents."""
     def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
-        return (is_intent_name("AMAZON.CancelIntent")(handler_input) or is_intent_name("AMAZON.StopIntent")(handler_input))
+        return (is_intent_name("AMAZON.CancelIntent")(handler_input) or
+                is_intent_name("AMAZON.StopIntent")(handler_input))
 
     def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
         try:
             speech_text = "Goodbye!"
-            return handler_input.response_builder.speak(speech_text).add_directive(StopDirective()).set_should_end_session(True).response
+            return handler_input.response_builder.speak(speech_text).add_directive(
+                StopDirective()).set_should_end_session(True).response
         except Exception as e:
             logger.error(f"Error in CancelOrStopIntentHandler: {e}", exc_info=True)
             return handler_input.response_builder.speak("Goodbye").set_should_end_session(True).response
 
 class SessionEndedRequestHandler(AbstractRequestHandler):
-    """Handler for Session End."""
     def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
         return is_request_type("SessionEndedRequest")(handler_input)
 
     def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
         try:
             logger.info("Session ended")
             return handler_input.response_builder.response
@@ -384,29 +498,25 @@ class SessionEndedRequestHandler(AbstractRequestHandler):
             return handler_input.response_builder.response
 
 class AllExceptionHandler(AbstractExceptionHandler):
-    """Catch all exception handler, log exception and respond with generic message."""
     def can_handle(self, handler_input, exception):
-        # type: (HandlerInput, Exception) -> bool
         return True
 
     def handle(self, handler_input, exception):
-        # type: (HandlerInput, Exception) -> Response
         logger.error(f"Unhandled exception: {exception}", exc_info=True)
         
         try:
             speech_text = "Sorry, there was an error. Please try again."
             return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
         except:
-            # Last resort - return minimal response
             logger.error("Failed to create error response")
             return handler_input.response_builder.speak("Error").response
 
-# Skill Builder object - Changed to CustomSkillBuilder for AudioPlayer support
 sb = CustomSkillBuilder()
 
-# Add all request handlers to the skill builder
 sb.add_request_handler(LaunchRequestHandler())
 sb.add_request_handler(PlayMusicIntentHandler())
+sb.add_request_handler(NextIntentHandler())
+sb.add_request_handler(PreviousIntentHandler())
 sb.add_request_handler(PlaybackStartedHandler())
 sb.add_request_handler(PlaybackFinishedHandler())
 sb.add_request_handler(PlaybackStoppedHandler())
@@ -417,12 +527,9 @@ sb.add_request_handler(HelpIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_request_handler(SessionEndedRequestHandler())
 
-# Add exception handler
 sb.add_exception_handler(AllExceptionHandler())
 
-# Expose the lambda handler for AWS Lambda to call
 handler = sb.lambda_handler()
 
 def lambda_handler(event, context):
     return handler(event, context)
-
