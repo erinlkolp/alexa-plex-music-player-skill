@@ -4,7 +4,7 @@
 
 ![Header Image](assets/header_image.png)
 
-This is an Alexa skill that allows playback of audio from their Plex Music library on Alexa/Echo devices.
+This is an Alexa skill that allows playback of audio from Plex Music libraries on Alexa/Echo devices.
 
 ## Features
 
