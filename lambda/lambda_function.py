@@ -16,14 +16,23 @@ from ask_sdk_model.interfaces.audioplayer import (
 )
 
 # Configure these with your Plex server details
-PLEX_TOKEN = "TOKEN_GOES_HERE"
-PLEX_SERVER_NAME = "SERVER_NAME_HERE"
+PLEX_TOKEN = "YOUR_PLEX_TOKEN"
+PLEX_SERVER_NAME = "YOUR_SERVER_NAME"
 
 # Automatically use relay URL for local playback
 USE_LOCAL_AUDIO_URL = True
 
 # DynamoDB table name
 DYNAMODB_TABLE_NAME = "PlexAlexaQueue"
+
+# Artist name mappings for spoken variations to Plex names
+ARTIST_MAPPINGS = {
+    "sugar free": "Suga Free",
+    "sugarfree": "Suga Free",
+    "suga": "Suga Free",
+    "sooga free": "Suga Free",
+    # Add more mappings as needed
+}
 
 # Will be populated automatically from Plex connections
 LOCAL_RELAY_URL = None
@@ -198,6 +207,8 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 slot = slots["artist"]
                 if slot and hasattr(slot, 'value') and slot.value:
                     artist_name = slot.value
+                    # Map common spoken variations to correct Plex artist names
+                    artist_name = ARTIST_MAPPINGS.get(artist_name.lower(), artist_name)
                     
             if slots and "album" in slots:
                 slot = slots["album"]
@@ -571,7 +582,69 @@ class PlaybackFailedHandler(AbstractRequestHandler):
         return is_request_type("AudioPlayer.PlaybackFailed")(handler_input)
     
     def handle(self, handler_input):
-        logger.error(f"Playback failed: {handler_input.request_envelope.request.error}")
+        error = handler_input.request_envelope.request.error
+        logger.error(f"Playback failed: {error}")
+        
+        # Check if it's a service unavailable error
+        if error and hasattr(error, 'type') and 'SERVICE_UNAVAILABLE' in str(error.type):
+            logger.info("Service unavailable error detected, attempting to skip to next track")
+            
+            try:
+                user_id = get_user_id(handler_input)
+                queue_data = get_queue(user_id)
+                
+                if queue_data and queue_data.get('tracks'):
+                    current_index = int(queue_data.get('current_index', 0))
+                    tracks = queue_data['tracks']
+                    
+                    # Try next track
+                    next_index = current_index + 1
+                    
+                    if next_index < len(tracks):
+                        logger.info(f"Retrying with next track at index {next_index}")
+                        
+                        # Update index
+                        update_queue_index(user_id, next_index)
+                        
+                        # Get next track
+                        track_info = tracks[next_index]
+                        track = get_track_by_key(track_info['key'])
+                        
+                        if track:
+                            audio_url = get_audio_url(track)
+                            logger.info(f"Retry: Playing track {track.title}")
+                            
+                            metadata = AudioItemMetadata(
+                                title=track.title,
+                                subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
+                            )
+                            
+                            stream = Stream(
+                                token=str(track.ratingKey),
+                                url=audio_url,
+                                offset_in_milliseconds=0
+                            )
+                            
+                            audio_item = AudioItem(
+                                stream=stream,
+                                metadata=metadata
+                            )
+                            
+                            play_directive = PlayDirective(
+                                play_behavior=PlayBehavior.REPLACE_ALL,
+                                audio_item=audio_item
+                            )
+                            
+                            return handler_input.response_builder.add_directive(play_directive).response
+                        else:
+                            logger.error("Could not fetch next track for retry")
+                    else:
+                        logger.info("No more tracks to retry, end of queue")
+                else:
+                    logger.info("No queue available for retry")
+            except Exception as e:
+                logger.error(f"Error during playback retry: {e}", exc_info=True)
+        
         return handler_input.response_builder.response
 
 class PauseIntentHandler(AbstractRequestHandler):
@@ -650,6 +723,40 @@ class ShuffleOffIntentHandler(AbstractRequestHandler):
             speech_text = "Sorry, I had trouble turning off shuffle."
             return handler_input.response_builder.speak(speech_text).response
 
+class WhatsPlayingIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return is_intent_name("WhatsPlayingIntent")(handler_input)
+    
+    def handle(self, handler_input):
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if not queue_data or not queue_data.get('tracks'):
+                speech_text = "Nothing is currently playing."
+                return handler_input.response_builder.speak(speech_text).response
+            
+            current_index = int(queue_data.get('current_index', 0))
+            tracks = queue_data['tracks']
+            
+            if current_index < len(tracks):
+                current_track = tracks[current_index]
+                track_title = current_track.get('title', 'Unknown')
+                artist_name = current_track.get('artist', 'Unknown Artist')
+                
+                speech_text = f"You're listening to {track_title} by {artist_name}."
+                
+                return handler_input.response_builder.speak(speech_text).set_card(
+                    SimpleCard("Now Playing", f"{track_title}\nby {artist_name}")).response
+            else:
+                speech_text = "I couldn't determine what's currently playing."
+                return handler_input.response_builder.speak(speech_text).response
+                
+        except Exception as e:
+            logger.error(f"Error in WhatsPlayingIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble getting the current track information."
+            return handler_input.response_builder.speak(speech_text).response
+
 class HelpIntentHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.HelpIntent")(handler_input)
@@ -718,6 +825,7 @@ sb.add_request_handler(PauseIntentHandler())
 sb.add_request_handler(ResumeIntentHandler())
 sb.add_request_handler(ShuffleOnIntentHandler())
 sb.add_request_handler(ShuffleOffIntentHandler())
+sb.add_request_handler(WhatsPlayingIntentHandler())
 sb.add_request_handler(HelpIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_request_handler(SessionEndedRequestHandler())
@@ -727,4 +835,7 @@ sb.add_exception_handler(AllExceptionHandler())
 handler = sb.lambda_handler()
 
 def lambda_handler(event, context):
+    # Log the incoming request for debugging
+    logger.info(f"Received request type: {event.get('request', {}).get('type', 'Unknown')}")
+    logger.info(f"Request object: {event.get('request', {})}")
     return handler(event, context)

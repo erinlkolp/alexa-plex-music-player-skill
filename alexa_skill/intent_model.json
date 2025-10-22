@@ -40,6 +40,22 @@
                     "samples": []
                 },
                 {
+                    "name": "WhatsPlayingIntent",
+                    "samples": [
+                        "what song am I listening to",
+                        "what track is this",
+                        "what's playing",
+                        "what song is this",
+                        "what is this song",
+                        "what's this song",
+                        "what am I listening to",
+                        "what track is playing",
+                        "tell me what's playing",
+                        "what is playing"
+                    ],
+                    "slots": []
+                },
+                {
                     "name": "PlayMusicIntent",
                     "slots": [
                         {
