@@ -248,13 +248,13 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                             break
                     
                     if matching_playlist:
-                        # Limit playlist to 50 tracks to avoid timeout
+                        # Limit playlist to 150 tracks to avoid timeout
                         all_tracks = matching_playlist.items()
-                        tracks_to_play = all_tracks[:50]
+                        tracks_to_play = all_tracks[:150]
                         total_tracks = len(all_tracks)
                         
-                        if total_tracks > 50:
-                            speech_text = f"Playing the first 50 tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
+                        if total_tracks > 150:
+                            speech_text = f"Playing the first 150 tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
                         else:
                             speech_text = f"Playing playlist {matching_playlist.title}."
                         
@@ -293,7 +293,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 results = MUSIC.searchArtists(title=artist_name)
                 if results:
                     artist = results[0]
-                    tracks_to_play = artist.tracks()[:50]
+                    tracks_to_play = artist.tracks()[:150]
                     speech_text = f"Playing music by {artist.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling music by {artist.title}."
@@ -515,8 +515,8 @@ class PlaybackNearlyFinishedHandler(AbstractRequestHandler):
                 logger.info("Reached end of queue, not enqueuing")
                 return handler_input.response_builder.response
             
-            # Update index in DynamoDB
-            update_queue_index(user_id, next_index)
+            # DON'T update index yet - wait until PlaybackStarted
+            # This way "what's playing" shows the correct current track
             
             # Get next track
             track_info = tracks[next_index]
@@ -567,6 +567,23 @@ class PlaybackFinishedHandler(AbstractRequestHandler):
     
     def handle(self, handler_input):
         logger.info("Playback finished")
+        
+        # Update the index when track actually finishes
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if queue_data and queue_data.get('tracks'):
+                current_index = int(queue_data.get('current_index', 0))
+                next_index = current_index + 1
+                
+                # Only update if not at end of queue
+                if next_index < len(queue_data['tracks']):
+                    update_queue_index(user_id, next_index)
+                    logger.info(f"Updated queue index to {next_index}")
+        except Exception as e:
+            logger.error(f"Error updating index in PlaybackFinished: {e}", exc_info=True)
+        
         return handler_input.response_builder.response
 
 class PlaybackStoppedHandler(AbstractRequestHandler):
