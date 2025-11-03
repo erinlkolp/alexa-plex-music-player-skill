@@ -483,6 +483,29 @@ class PlaybackStartedHandler(AbstractRequestHandler):
     
     def handle(self, handler_input):
         logger.info("Playback started")
+        
+        # Update the index when a new track actually starts playing
+        try:
+            current_token = handler_input.request_envelope.request.token
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+            
+            if queue_data and queue_data.get('tracks'):
+                tracks = queue_data['tracks']
+                
+                # Find the track in the queue by matching the token (rating key)
+                for index, track_info in enumerate(tracks):
+                    if str(track_info['key']) == str(current_token):
+                        current_queue_index = int(queue_data.get('current_index', 0))
+                        
+                        # Only update if this is a different track
+                        if index != current_queue_index:
+                            update_queue_index(user_id, index)
+                            logger.info(f"Updated queue index to {index} for track {track_info['title']}")
+                        break
+        except Exception as e:
+            logger.error(f"Error updating index in PlaybackStarted: {e}", exc_info=True)
+        
         return handler_input.response_builder.response
 
 class PlaybackNearlyFinishedHandler(AbstractRequestHandler):
