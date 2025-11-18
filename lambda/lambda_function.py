@@ -1,6 +1,7 @@
 import logging
 import boto3
 from decimal import Decimal
+from difflib import get_close_matches
 from plexapi.server import PlexServer
 from ask_sdk_core.skill_builder import CustomSkillBuilder
 from ask_sdk_core.handler_input import HandlerInput
@@ -26,13 +27,15 @@ USE_LOCAL_AUDIO_URL = True
 DYNAMODB_TABLE_NAME = "PlexAlexaQueue"
 
 # Artist name mappings for spoken variations to Plex names
+# This is now optional - fuzzy matching will handle most cases automatically
 ARTIST_MAPPINGS = {
-    "sugar free": "Suga Free",
-    "sugarfree": "Suga Free",
-    "suga": "Suga Free",
-    "sooga free": "Suga Free",
-    # Add more mappings as needed
+    # Keep any specific mappings you want to force
+    # "sugar free": "Suga Free",
 }
+
+# Cache for Plex artists to avoid repeated API calls
+artist_cache = []
+artist_cache_loaded = False
 
 # Will be populated automatically from Plex connections
 LOCAL_RELAY_URL = None
@@ -166,6 +169,53 @@ def get_track_by_key(rating_key):
         logger.error(f"Error fetching track {rating_key}: {e}")
         return None
 
+def load_artist_cache():
+    """Load all artist names from Plex for fuzzy matching."""
+    global artist_cache, artist_cache_loaded
+    
+    if artist_cache_loaded:
+        return artist_cache
+    
+    try:
+        logger.info("Loading artist cache from Plex...")
+        artists = MUSIC.searchArtists()
+        artist_cache = [artist.title for artist in artists]
+        artist_cache_loaded = True
+        logger.info(f"Loaded {len(artist_cache)} artists into cache")
+        return artist_cache
+    except Exception as e:
+        logger.error(f"Error loading artist cache: {e}", exc_info=True)
+        return []
+
+def fuzzy_match_artist(spoken_name):
+    """
+    Use fuzzy matching to find the closest artist name in Plex library.
+    Returns the matched artist name or the original if no good match found.
+    """
+    # First check manual mappings
+    manual_match = ARTIST_MAPPINGS.get(spoken_name.lower())
+    if manual_match:
+        logger.info(f"Manual mapping: '{spoken_name}' -> '{manual_match}'")
+        return manual_match
+    
+    # Load artist cache if needed
+    artists = load_artist_cache()
+    
+    if not artists:
+        logger.warning("Artist cache is empty, returning original name")
+        return spoken_name
+    
+    # Use fuzzy matching with cutoff of 0.6 (60% similarity)
+    matches = get_close_matches(spoken_name, artists, n=1, cutoff=0.6)
+    
+    if matches:
+        matched_name = matches[0]
+        logger.info(f"Fuzzy match: '{spoken_name}' -> '{matched_name}'")
+        return matched_name
+    else:
+        logger.info(f"No fuzzy match found for '{spoken_name}', using original")
+        return spoken_name
+
 class LaunchRequestHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_request_type("LaunchRequest")(handler_input)
@@ -207,8 +257,8 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 slot = slots["artist"]
                 if slot and hasattr(slot, 'value') and slot.value:
                     artist_name = slot.value
-                    # Map common spoken variations to correct Plex artist names
-                    artist_name = ARTIST_MAPPINGS.get(artist_name.lower(), artist_name)
+                    # Use fuzzy matching to find closest artist in Plex
+                    artist_name = fuzzy_match_artist(artist_name)
                     
             if slots and "album" in slots:
                 slot = slots["album"]
@@ -590,23 +640,7 @@ class PlaybackFinishedHandler(AbstractRequestHandler):
     
     def handle(self, handler_input):
         logger.info("Playback finished")
-        
-        # Update the index when track actually finishes
-        try:
-            user_id = get_user_id(handler_input)
-            queue_data = get_queue(user_id)
-            
-            if queue_data and queue_data.get('tracks'):
-                current_index = int(queue_data.get('current_index', 0))
-                next_index = current_index + 1
-                
-                # Only update if not at end of queue
-                if next_index < len(queue_data['tracks']):
-                    update_queue_index(user_id, next_index)
-                    logger.info(f"Updated queue index to {next_index}")
-        except Exception as e:
-            logger.error(f"Error updating index in PlaybackFinished: {e}", exc_info=True)
-        
+        # Index is now updated in PlaybackStarted instead
         return handler_input.response_builder.response
 
 class PlaybackStoppedHandler(AbstractRequestHandler):
