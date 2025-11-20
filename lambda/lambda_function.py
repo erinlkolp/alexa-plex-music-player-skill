@@ -423,8 +423,7 @@ class NextIntentHandler(AbstractRequestHandler):
                 speech_text = "You've reached the end of the queue."
                 return handler_input.response_builder.speak(speech_text).response
             
-            # Update index in DynamoDB
-            update_queue_index(user_id, next_index)
+            # Don't update index here - PlaybackStarted will handle it
             
             track_info = tracks[next_index]
             track = get_track_by_key(track_info['key'])
@@ -486,8 +485,7 @@ class PreviousIntentHandler(AbstractRequestHandler):
                 speech_text = "You're at the beginning of the queue."
                 return handler_input.response_builder.speak(speech_text).response
             
-            # Update index in DynamoDB
-            update_queue_index(user_id, prev_index)
+            # Don't update index here - PlaybackStarted will handle it
             
             track_info = tracks[prev_index]
             track = get_track_by_key(track_info['key'])
