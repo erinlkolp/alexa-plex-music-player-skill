@@ -829,13 +829,91 @@ class WhatsPlayingIntentHandler(AbstractRequestHandler):
             speech_text = "Sorry, I had trouble getting the current track information."
             return handler_input.response_builder.speak(speech_text).response
 
+class RateSongIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return is_intent_name("RateSongIntent")(handler_input)
+
+    def handle(self, handler_input):
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+
+            if not queue_data or not queue_data.get('tracks'):
+                speech_text = "Nothing is currently playing. Please play a song first."
+                return handler_input.response_builder.speak(speech_text).response
+
+            # Get the rating from the slot
+            slots = handler_input.request_envelope.request.intent.slots
+            rating_value = None
+
+            if slots and "rating" in slots:
+                slot = slots["rating"]
+                if slot and hasattr(slot, 'value') and slot.value:
+                    try:
+                        rating_value = float(slot.value)
+                    except ValueError:
+                        speech_text = "I didn't understand the rating. Please say a number from 1 to 5."
+                        return handler_input.response_builder.speak(speech_text).response
+
+            if rating_value is None:
+                speech_text = "Please specify a rating from 1 to 5 stars."
+                return handler_input.response_builder.speak(speech_text).response
+
+            # Validate rating is between 1 and 5
+            if rating_value < 0 or rating_value > 5:
+                speech_text = "Please provide a rating between 1 and 5 stars."
+                return handler_input.response_builder.speak(speech_text).response
+
+            # Get the current track
+            current_index = int(queue_data.get('current_index', 0))
+            tracks = queue_data['tracks']
+
+            if current_index < len(tracks):
+                current_track_info = tracks[current_index]
+                track_title = current_track_info.get('title', 'Unknown')
+
+                # Fetch the actual track from Plex
+                track = get_track_by_key(current_track_info['key'])
+
+                if not track:
+                    speech_text = "Sorry, I couldn't access the current track to rate it."
+                    return handler_input.response_builder.speak(speech_text).response
+
+                # Convert 1-5 star rating to Plex's 0-10 scale
+                plex_rating = rating_value * 2.0
+
+                # Rate the track using Plex API
+                try:
+                    track.rate(plex_rating)
+                    logger.info(f"Rated track '{track_title}' with {rating_value} stars (Plex rating: {plex_rating})")
+
+                    if rating_value == 1:
+                        speech_text = f"I've rated {track_title} 1 star."
+                    else:
+                        speech_text = f"I've rated {track_title} {int(rating_value)} stars."
+
+                    return handler_input.response_builder.speak(speech_text).set_card(
+                        SimpleCard("Song Rated", f"{track_title}\nRating: {int(rating_value)} stars")).response
+                except Exception as e:
+                    logger.error(f"Error rating track: {e}", exc_info=True)
+                    speech_text = "Sorry, I had trouble setting the rating in Plex."
+                    return handler_input.response_builder.speak(speech_text).response
+            else:
+                speech_text = "I couldn't determine what's currently playing."
+                return handler_input.response_builder.speak(speech_text).response
+
+        except Exception as e:
+            logger.error(f"Error in RateSongIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble rating the song."
+            return handler_input.response_builder.speak(speech_text).response
+
 class HelpIntentHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.HelpIntent")(handler_input)
 
     def handle(self, handler_input):
         try:
-            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, play the album Abbey Road, or play playlist Favorites. You can also say shuffle, next, previous, pause, or stop to control playback."
+            speech_text = "You can ask me to play a song, album, artist, or playlist from your Plex server. For example, say play The Beatles, play the album Abbey Road, or play playlist Favorites. You can also say shuffle, next, previous, pause, or stop to control playback. You can rate the current song by saying rate this song 3 stars."
             return handler_input.response_builder.speak(speech_text).ask(speech_text).response
         except Exception as e:
             logger.error(f"Error in HelpIntentHandler: {e}", exc_info=True)
@@ -898,6 +976,7 @@ sb.add_request_handler(ResumeIntentHandler())
 sb.add_request_handler(ShuffleOnIntentHandler())
 sb.add_request_handler(ShuffleOffIntentHandler())
 sb.add_request_handler(WhatsPlayingIntentHandler())
+sb.add_request_handler(RateSongIntentHandler())
 sb.add_request_handler(HelpIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_request_handler(SessionEndedRequestHandler())
