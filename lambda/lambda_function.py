@@ -831,12 +831,17 @@ class WhatsPlayingIntentHandler(AbstractRequestHandler):
 
 class RateSongIntentHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
-        return is_intent_name("RateSongIntent")(handler_input)
+        can_handle_result = is_intent_name("RateSongIntent")(handler_input)
+        logger.info(f"RateSongIntentHandler.can_handle called: {can_handle_result}")
+        return can_handle_result
 
     def handle(self, handler_input):
+        logger.info("=== RateSongIntentHandler.handle called ===")
         try:
             user_id = get_user_id(handler_input)
+            logger.info(f"User ID: {user_id}")
             queue_data = get_queue(user_id)
+            logger.info(f"Queue data retrieved: {queue_data is not None}")
 
             if not queue_data or not queue_data.get('tracks'):
                 speech_text = "Nothing is currently playing. Please play a song first."
@@ -844,18 +849,27 @@ class RateSongIntentHandler(AbstractRequestHandler):
 
             # Get the rating from the slot
             slots = handler_input.request_envelope.request.intent.slots
+            logger.info(f"Slots: {slots}")
             rating_value = None
 
             if slots and "rating" in slots:
                 slot = slots["rating"]
+                logger.info(f"Rating slot found: {slot}")
                 if slot and hasattr(slot, 'value') and slot.value:
                     try:
                         rating_value = float(slot.value)
+                        logger.info(f"Rating value parsed: {rating_value}")
                     except ValueError:
+                        logger.error(f"Could not parse rating value: {slot.value}")
                         speech_text = "I didn't understand the rating. Please say a number from 1 to 5."
                         return handler_input.response_builder.speak(speech_text).response
+                else:
+                    logger.warning("Rating slot exists but has no value")
+            else:
+                logger.warning("No rating slot found in request")
 
             if rating_value is None:
+                logger.warning("Rating value is None, returning error")
                 speech_text = "Please specify a rating from 1 to 5 stars."
                 return handler_input.response_builder.speak(speech_text).response
 
@@ -987,6 +1001,16 @@ handler = sb.lambda_handler()
 
 def lambda_handler(event, context):
     # Log the incoming request for debugging
-    logger.info(f"Received request type: {event.get('request', {}).get('type', 'Unknown')}")
-    logger.info(f"Request object: {event.get('request', {})}")
+    request_type = event.get('request', {}).get('type', 'Unknown')
+    logger.info(f"========== NEW REQUEST ==========")
+    logger.info(f"Received request type: {request_type}")
+
+    # Log intent name if this is an intent request
+    if request_type == 'IntentRequest':
+        intent_name = event.get('request', {}).get('intent', {}).get('name', 'Unknown')
+        logger.info(f"Intent name: {intent_name}")
+        logger.info(f"Intent slots: {event.get('request', {}).get('intent', {}).get('slots', {})}")
+
+    logger.info(f"Full request object: {event.get('request', {})}")
+    logger.info(f"=================================")
     return handler(event, context)
