@@ -96,6 +96,28 @@
                 {
                     "name": "AMAZON.NavigateHomeIntent",
                     "samples": []
+                },
+                {
+                    "name": "RateSongIntent",
+                    "slots": [
+                        {
+                            "name": "rating",
+                            "type": "AMAZON.NUMBER"
+                        }
+                    ],
+                    "samples": [
+                        "rate this song {rating} stars",
+                        "rate this song {rating}",
+                        "rate this {rating} stars",
+                        "give this song {rating} stars",
+                        "rate the song {rating} stars",
+                        "rate the current song {rating} stars",
+                        "rate it {rating} stars",
+                        "give it {rating} stars",
+                        "I rate this {rating} stars",
+                        "set rating to {rating} stars",
+                        "set the rating to {rating}"
+                    ]
                 }
             ],
             "types": [
