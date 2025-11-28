@@ -29,8 +29,14 @@ DYNAMODB_TABLE_NAME = "PlexAlexaQueue"
 # Artist name mappings for spoken variations to Plex names
 # This is now optional - fuzzy matching will handle most cases automatically
 ARTIST_MAPPINGS = {
-    # Keep any specific mappings you want to force
-    # "sugar free": "Suga Free",
+    "sugar free": "Suga Free",
+    "austin larolle": "Austin Larold",
+    "austin larold": "Austin Larold",
+    "austin": "Austin Larold",
+    "doctor dre": "Dr. Dre",
+    "doctor dray": "Dr. Dre",
+    "the doctor": "Dr. Dre",
+    "86 love": "86LOVE",
 }
 
 # Cache for Plex artists to avoid repeated API calls
