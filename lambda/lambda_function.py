@@ -175,6 +175,36 @@ def get_track_by_key(rating_key):
         logger.error(f"Error fetching track {rating_key}: {e}")
         return None
 
+def filter_tracks_by_rating(tracks):
+    """
+    Filter tracks to exclude 1-star rated songs.
+    Includes: 2+ star songs and unrated songs.
+    Excludes: 1-star songs (rating 2.0 on Plex's 0-10 scale).
+    """
+    filtered_tracks = []
+    for track in tracks:
+        try:
+            # Check if track has userRating attribute
+            if hasattr(track, 'userRating') and track.userRating is not None:
+                # userRating is on a 0-10 scale (1 star = 2.0, 2 stars = 4.0, etc.)
+                # Exclude 1-star songs (rating 2.0)
+                if track.userRating >= 4.0 or track.userRating == 0:
+                    # Include 2+ stars or unrated (0)
+                    filtered_tracks.append(track)
+                else:
+                    # Exclude 1-star songs
+                    logger.info(f"Filtering out 1-star track: {track.title} (rating: {track.userRating})")
+            else:
+                # Track has no rating, include it
+                filtered_tracks.append(track)
+        except Exception as e:
+            # If there's any error checking the rating, include the track to be safe
+            logger.warning(f"Error checking rating for track, including anyway: {e}")
+            filtered_tracks.append(track)
+
+    logger.info(f"Filtered tracks: {len(tracks)} -> {len(filtered_tracks)} (excluded {len(tracks) - len(filtered_tracks)} 1-star songs)")
+    return filtered_tracks
+
 def load_artist_cache():
     """Load all artist names from Plex for fuzzy matching."""
     global artist_cache, artist_cache_loaded
@@ -304,16 +334,18 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                             break
                     
                     if matching_playlist:
-                        # Limit playlist to 150 tracks to avoid timeout
+                        # Get all playlist tracks and filter out 1-star songs
                         all_tracks = matching_playlist.items()
-                        tracks_to_play = all_tracks[:150]
-                        total_tracks = len(all_tracks)
-                        
+                        filtered_tracks = filter_tracks_by_rating(all_tracks)
+                        # Limit to 150 tracks to avoid timeout
+                        tracks_to_play = filtered_tracks[:150]
+                        total_tracks = len(filtered_tracks)
+
                         if total_tracks > 150:
                             speech_text = f"Playing the first 150 tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
                         else:
                             speech_text = f"Playing playlist {matching_playlist.title}."
-                        
+
                         if should_shuffle:
                             speech_text = f"Shuffling playlist {matching_playlist.title}."
                     else:
@@ -327,8 +359,14 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
             elif track_name:
                 results = MUSIC.searchTracks(title=track_name)
                 if results:
-                    tracks_to_play = [results[0]]
-                    speech_text = f"Playing {results[0].title} by {results[0].artist().title}."
+                    # Filter out 1-star songs from results
+                    filtered_results = filter_tracks_by_rating(results)
+                    if filtered_results:
+                        tracks_to_play = [filtered_results[0]]
+                        speech_text = f"Playing {filtered_results[0].title} by {filtered_results[0].artist().title}."
+                    else:
+                        speech_text = f"I found {track_name}, but it's rated 1 star. Skipping."
+                        return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
                 else:
                     speech_text = f"I couldn't find the track {track_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -337,7 +375,9 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 results = MUSIC.searchAlbums(title=album_name)
                 if results:
                     album = results[0]
-                    tracks_to_play = album.tracks()
+                    all_album_tracks = album.tracks()
+                    # Filter out 1-star songs
+                    tracks_to_play = filter_tracks_by_rating(all_album_tracks)
                     speech_text = f"Playing the album {album.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling the album {album.title}."
@@ -349,7 +389,10 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 results = MUSIC.searchArtists(title=artist_name)
                 if results:
                     artist = results[0]
-                    tracks_to_play = artist.tracks()[:150]
+                    all_artist_tracks = artist.tracks()
+                    # Filter out 1-star songs
+                    filtered_artist_tracks = filter_tracks_by_rating(all_artist_tracks)
+                    tracks_to_play = filtered_artist_tracks[:150]
                     speech_text = f"Playing music by {artist.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling music by {artist.title}."
