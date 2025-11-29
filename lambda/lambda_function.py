@@ -71,11 +71,11 @@ try:
     
     logger.info(f"Attempting to connect to server: {PLEX_SERVER_NAME}")
     server_resource = account.resource(PLEX_SERVER_NAME)
-    
-    # Find direct public connection for Lambda
+
+    # Find relay and direct public connections
     direct_connection = None
     relay_connection = None
-    
+
     for conn in server_resource.connections:
         if not conn.local and not conn.relay:
             direct_connection = conn.uri
@@ -83,17 +83,18 @@ try:
         elif conn.relay:
             relay_connection = conn.uri
             logger.info(f"Found relay connection: {relay_connection}")
-    
-    # Store relay URL for local audio playback
+
+    # Prefer relay connection for both Lambda and audio streaming (more reliable for Alexa)
     if relay_connection:
         LOCAL_RELAY_URL = relay_connection
-        logger.info(f"Using relay URL for local audio: {LOCAL_RELAY_URL}")
-    
-    if direct_connection:
+        plex = PlexServer(relay_connection, PLEX_TOKEN, timeout=15)
+        logger.info(f"Successfully connected via relay: {relay_connection}")
+        logger.info(f"Using relay URL for audio streaming: {relay_connection}")
+    elif direct_connection:
         plex = PlexServer(direct_connection, PLEX_TOKEN, timeout=15)
-        logger.info(f"Successfully connected to: {direct_connection}")
+        logger.info(f"Successfully connected via direct connection: {direct_connection}")
     else:
-        logger.error("No direct public connection found, falling back to default")
+        logger.error("No public or relay connection found, falling back to default")
         plex = server_resource.connect(timeout=15)
     
     MUSIC = plex.library.section('Music')
