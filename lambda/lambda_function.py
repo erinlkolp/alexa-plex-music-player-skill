@@ -391,8 +391,19 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 if results:
                     artist = results[0]
                     all_artist_tracks = artist.tracks()
+
+                    # Remove duplicates by ratingKey (same track on multiple albums)
+                    seen_keys = set()
+                    unique_tracks = []
+                    for track in all_artist_tracks:
+                        if track.ratingKey not in seen_keys:
+                            seen_keys.add(track.ratingKey)
+                            unique_tracks.append(track)
+
+                    logger.info(f"Artist tracks: {len(all_artist_tracks)} total, {len(unique_tracks)} unique")
+
                     # Filter out 1-star songs
-                    filtered_artist_tracks = filter_tracks_by_rating(all_artist_tracks)
+                    filtered_artist_tracks = filter_tracks_by_rating(unique_tracks)
                     tracks_to_play = filtered_artist_tracks[:150]
                     speech_text = f"Playing music by {artist.title}."
                     if should_shuffle:
