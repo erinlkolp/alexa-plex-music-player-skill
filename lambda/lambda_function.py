@@ -1,5 +1,7 @@
 import logging
+import random
 import boto3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from difflib import get_close_matches
 from plexapi.server import PlexServer
@@ -129,17 +131,33 @@ def get_audio_url(track):
 def get_user_id(handler_input):
     return handler_input.request_envelope.context.system.user.user_id
 
-def save_queue(user_id, tracks, current_index=0, shuffle=False):
-    """Save queue to DynamoDB."""
+def save_queue(user_id, tracks, current_index=0, shuffle=False, serialized_tracks=None):
+    """
+    Save queue to DynamoDB.
+
+    Args:
+        user_id: User identifier
+        tracks: List of Plex track objects (used if serialized_tracks not provided)
+        current_index: Current position in queue
+        shuffle: Whether shuffle is enabled
+        serialized_tracks: Optional pre-serialized track list (optimization)
+    """
     try:
+        # Use pre-serialized tracks if available, otherwise serialize on the fly
+        if serialized_tracks is not None:
+            track_data = serialized_tracks
+        else:
+            # Fallback to parallel serialization
+            track_data = serialize_tracks_parallel(tracks)
+
         item = {
             'user_id': user_id,
-            'tracks': [{'key': int(t.ratingKey), 'title': t.title, 'artist': t.artist().title if hasattr(t, 'artist') else 'Unknown'} for t in tracks],
+            'tracks': track_data,
             'current_index': int(current_index),
             'shuffle': shuffle
         }
         table.put_item(Item=item)
-        logger.info(f"Saved queue to DynamoDB for user {user_id}: {len(tracks)} tracks, index {current_index}, shuffle {shuffle}")
+        logger.info(f"Saved queue to DynamoDB for user {user_id}: {len(track_data)} tracks, index {current_index}, shuffle {shuffle}")
     except Exception as e:
         logger.error(f"Error saving queue to DynamoDB: {e}", exc_info=True)
 
@@ -175,6 +193,80 @@ def get_track_by_key(rating_key):
     except Exception as e:
         logger.error(f"Error fetching track {rating_key}: {e}")
         return None
+
+# Maximum number of tracks to process to avoid Lambda timeouts
+MAX_TRACKS = 150
+
+def serialize_track(track, artist_name=None):
+    """
+    Serialize a single track to a dictionary for DynamoDB storage.
+
+    Args:
+        track: Plex track object
+        artist_name: Optional pre-fetched artist name to avoid API calls
+
+    Returns:
+        Dictionary with track key, title, and artist
+    """
+    try:
+        if artist_name is None:
+            # Fallback: try to get artist from track (may trigger API call)
+            try:
+                artist_name = track.artist().title if hasattr(track, 'artist') else 'Unknown'
+            except Exception:
+                artist_name = 'Unknown'
+        return {
+            'key': int(track.ratingKey),
+            'title': track.title,
+            'artist': artist_name
+        }
+    except Exception as e:
+        logger.warning(f"Error serializing track: {e}")
+        return None
+
+def serialize_tracks_parallel(tracks, artist_name=None, max_workers=10):
+    """
+    Serialize multiple tracks in parallel using ThreadPoolExecutor.
+
+    When artist_name is provided (e.g., from artist.title), it's used directly
+    for all tracks, avoiding expensive per-track artist() API calls.
+
+    Args:
+        tracks: List of Plex track objects
+        artist_name: Optional artist name to use for all tracks (optimization)
+        max_workers: Maximum number of parallel threads
+
+    Returns:
+        List of serialized track dictionaries
+    """
+    if not tracks:
+        return []
+
+    # If artist_name is provided, we can serialize synchronously since no API calls needed
+    if artist_name is not None:
+        serialized = []
+        for track in tracks:
+            result = serialize_track(track, artist_name)
+            if result:
+                serialized.append(result)
+        logger.info(f"Serialized {len(serialized)} tracks with cached artist name")
+        return serialized
+
+    # Otherwise, use parallel execution for tracks that need artist lookups
+    serialized = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_track = {executor.submit(serialize_track, track): track for track in tracks}
+        for future in as_completed(future_to_track):
+            result = future.result()
+            if result:
+                serialized.append(result)
+
+    # Preserve original order by sorting by ratingKey matching original track order
+    track_order = {int(t.ratingKey): i for i, t in enumerate(tracks)}
+    serialized.sort(key=lambda x: track_order.get(x['key'], float('inf')))
+
+    logger.info(f"Serialized {len(serialized)} tracks in parallel")
+    return serialized
 
 def filter_tracks_by_rating(tracks):
     """
@@ -325,6 +417,9 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
             
             tracks_to_play = []
             
+            # Variables to store context for optimized serialization
+            cached_artist_name = None
+
             if playlist_name:
                 try:
                     playlists = plex.playlists()
@@ -333,17 +428,20 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                         if playlist_name.lower() in playlist.title.lower():
                             matching_playlist = playlist
                             break
-                    
-                    if matching_playlist:
-                        # Get all playlist tracks and filter out 1-star songs
-                        all_tracks = matching_playlist.items()
-                        filtered_tracks = filter_tracks_by_rating(all_tracks)
-                        # Limit to 150 tracks to avoid timeout
-                        tracks_to_play = filtered_tracks[:150]
-                        total_tracks = len(filtered_tracks)
 
-                        if total_tracks > 150:
-                            speech_text = f"Playing the first 150 tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
+                    if matching_playlist:
+                        # Get playlist tracks and filter out 1-star songs
+                        all_tracks = list(matching_playlist.items())
+                        total_tracks = len(all_tracks)
+
+                        # Apply limit BEFORE filtering to reduce processing time
+                        # We take more than MAX_TRACKS initially since some may be filtered out
+                        tracks_to_filter = all_tracks[:MAX_TRACKS * 2] if total_tracks > MAX_TRACKS else all_tracks
+                        filtered_tracks = filter_tracks_by_rating(tracks_to_filter)
+                        tracks_to_play = filtered_tracks[:MAX_TRACKS]
+
+                        if total_tracks > MAX_TRACKS:
+                            speech_text = f"Playing the first {len(tracks_to_play)} tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
                         else:
                             speech_text = f"Playing playlist {matching_playlist.title}."
 
@@ -376,9 +474,16 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 results = MUSIC.searchAlbums(title=album_name)
                 if results:
                     album = results[0]
-                    all_album_tracks = album.tracks()
+                    all_album_tracks = list(album.tracks())
+
+                    # Cache artist name from album's parent artist for serialization optimization
+                    try:
+                        cached_artist_name = album.artist().title if hasattr(album, 'artist') else None
+                    except Exception:
+                        cached_artist_name = None
+
                     # Filter out 1-star songs
-                    tracks_to_play = filter_tracks_by_rating(all_album_tracks)
+                    tracks_to_play = filter_tracks_by_rating(all_album_tracks)[:MAX_TRACKS]
                     speech_text = f"Playing the album {album.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling the album {album.title}."
@@ -390,21 +495,34 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 results = MUSIC.searchArtists(title=artist_name)
                 if results:
                     artist = results[0]
-                    all_artist_tracks = artist.tracks()
+
+                    # Cache artist name for serialization optimization - CRITICAL for performance
+                    cached_artist_name = artist.title
+                    logger.info(f"Cached artist name: {cached_artist_name}")
+
+                    all_artist_tracks = list(artist.tracks())
+                    total_tracks = len(all_artist_tracks)
+
+                    # Apply early limit BEFORE deduplication to reduce processing
+                    # Take extra tracks to account for duplicates that will be removed
+                    tracks_to_process = all_artist_tracks[:MAX_TRACKS * 3] if total_tracks > MAX_TRACKS else all_artist_tracks
 
                     # Remove duplicates by ratingKey (same track on multiple albums)
                     seen_keys = set()
                     unique_tracks = []
-                    for track in all_artist_tracks:
+                    for track in tracks_to_process:
                         if track.ratingKey not in seen_keys:
                             seen_keys.add(track.ratingKey)
                             unique_tracks.append(track)
+                            # Stop early once we have enough unique tracks
+                            if len(unique_tracks) >= MAX_TRACKS * 2:
+                                break
 
-                    logger.info(f"Artist tracks: {len(all_artist_tracks)} total, {len(unique_tracks)} unique")
+                    logger.info(f"Artist tracks: {total_tracks} total, {len(unique_tracks)} unique (after early limit)")
 
-                    # Filter out 1-star songs
+                    # Filter out 1-star songs and apply final limit
                     filtered_artist_tracks = filter_tracks_by_rating(unique_tracks)
-                    tracks_to_play = filtered_artist_tracks[:150]
+                    tracks_to_play = filtered_artist_tracks[:MAX_TRACKS]
                     speech_text = f"Playing music by {artist.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling music by {artist.title}."
@@ -417,13 +535,16 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
 
             # Shuffle if requested
             if should_shuffle and len(tracks_to_play) > 1:
-                import random
                 tracks_to_play = list(tracks_to_play)
                 random.shuffle(tracks_to_play)
                 logger.info(f"Shuffled queue of {len(tracks_to_play)} tracks")
 
+            # Serialize tracks efficiently using cached artist name when available
+            # This avoids expensive per-track artist() API calls
+            serialized_tracks = serialize_tracks_parallel(tracks_to_play, artist_name=cached_artist_name)
+
             # Save the queue to DynamoDB for next/previous navigation
-            save_queue(user_id, tracks_to_play, 0, should_shuffle)
+            save_queue(user_id, tracks_to_play, 0, should_shuffle, serialized_tracks=serialized_tracks)
 
             if tracks_to_play:
                 first_track = tracks_to_play[0]
@@ -801,7 +922,6 @@ class ShuffleOnIntentHandler(AbstractRequestHandler):
     
     def handle(self, handler_input):
         try:
-            import random
             user_id = get_user_id(handler_input)
             queue_data = get_queue(user_id)
             
