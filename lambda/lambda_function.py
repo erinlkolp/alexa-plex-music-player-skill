@@ -1,7 +1,9 @@
 import logging
 import random
+import time
 import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.exceptions import SSLError, ConnectionError, Timeout
 from decimal import Decimal
 from difflib import get_close_matches
 from plexapi.server import PlexServer
@@ -298,6 +300,48 @@ def filter_tracks_by_rating(tracks):
     logger.info(f"Filtered tracks: {len(tracks)} -> {len(filtered_tracks)} (excluded {len(tracks) - len(filtered_tracks)} 1-star songs)")
     return filtered_tracks
 
+
+def plex_api_call_with_retry(func, *args, max_retries=3, **kwargs):
+    """
+    Execute a Plex API call with retry logic for transient connection errors.
+
+    Handles SSLError, ConnectionError, and Timeout which can occur when the
+    Plex server temporarily drops connections or is briefly unavailable.
+
+    Args:
+        func: The Plex API function to call
+        *args: Positional arguments to pass to the function
+        max_retries: Maximum number of retry attempts (default: 3)
+        **kwargs: Keyword arguments to pass to the function
+
+    Returns:
+        The result of the function call
+
+    Raises:
+        The original exception if all retries are exhausted
+    """
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except (SSLError, ConnectionError, Timeout) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                logger.warning(
+                    f"Plex API call failed (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"Plex API call failed after {max_retries} attempts: {type(e).__name__}: {e}"
+                )
+
+    raise last_exception
+
+
 def load_artist_cache():
     """Load all artist names from Plex for fuzzy matching."""
     global artist_cache, artist_cache_loaded
@@ -307,7 +351,7 @@ def load_artist_cache():
     
     try:
         logger.info("Loading artist cache from Plex...")
-        artists = MUSIC.searchArtists()
+        artists = plex_api_call_with_retry(MUSIC.searchArtists)
         artist_cache = [artist.title for artist in artists]
         artist_cache_loaded = True
         logger.info(f"Loaded {len(artist_cache)} artists into cache")
@@ -456,7 +500,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
             
             elif track_name:
-                results = MUSIC.searchTracks(title=track_name)
+                results = plex_api_call_with_retry(MUSIC.searchTracks, title=track_name)
                 if results:
                     # Filter out 1-star songs from results
                     filtered_results = filter_tracks_by_rating(results)
@@ -471,10 +515,10 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
                     
             elif album_name:
-                results = MUSIC.searchAlbums(title=album_name)
+                results = plex_api_call_with_retry(MUSIC.searchAlbums, title=album_name)
                 if results:
                     album = results[0]
-                    all_album_tracks = list(album.tracks())
+                    all_album_tracks = list(plex_api_call_with_retry(album.tracks))
 
                     # Cache artist name from album's parent artist for serialization optimization
                     try:
@@ -492,7 +536,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
                     
             elif artist_name:
-                results = MUSIC.searchArtists(title=artist_name)
+                results = plex_api_call_with_retry(MUSIC.searchArtists, title=artist_name)
                 if results:
                     artist = results[0]
 
@@ -500,7 +544,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     cached_artist_name = artist.title
                     logger.info(f"Cached artist name: {cached_artist_name}")
 
-                    all_artist_tracks = list(artist.tracks())
+                    all_artist_tracks = list(plex_api_call_with_retry(artist.tracks))
                     total_tracks = len(all_artist_tracks)
 
                     # Apply early limit BEFORE deduplication to reduce processing
