@@ -792,28 +792,44 @@ class PlaybackNearlyFinishedHandler(AbstractRequestHandler):
             # Get the current track token from the request
             current_token = handler_input.request_envelope.request.token
             user_id = get_user_id(handler_input)
-            
+
             logger.info(f"Playback nearly finished for track token: {current_token}")
-            
+
             # Get queue from DynamoDB
             queue_data = get_queue(user_id)
-            
+
             if not queue_data or not queue_data.get('tracks'):
                 logger.info("No queue found, not enqueuing next track")
                 return handler_input.response_builder.response
-            
-            current_index = int(queue_data.get('current_index', 0))
+
+            stored_index = int(queue_data.get('current_index', 0))
             tracks = queue_data['tracks']
-            
-            # Calculate next track index
-            next_index = current_index + 1
+
+            # CRITICAL: Find the actual position of the currently playing track
+            # by matching the token. Don't trust stored_index as it may be stale
+            # due to race conditions (e.g., user skipped tracks and index wasn't updated yet)
+            actual_current_index = None
+            for index, track_info in enumerate(tracks):
+                if str(track_info['key']) == str(current_token):
+                    actual_current_index = index
+                    break
+
+            if actual_current_index is None:
+                logger.warning(f"Could not find track with token {current_token} in queue, falling back to stored index")
+                actual_current_index = stored_index
+            elif actual_current_index != stored_index:
+                # Update the stored index to match reality - this prevents future race conditions
+                logger.info(f"Index mismatch detected: stored={stored_index}, actual={actual_current_index}. Updating queue index.")
+                update_queue_index(user_id, actual_current_index)
+
+            # Calculate next track index based on ACTUAL position
+            next_index = actual_current_index + 1
+
+            logger.info(f"Queue position: stored_index={stored_index}, actual_current_index={actual_current_index}, next_index={next_index}")
             
             if next_index >= len(tracks):
                 logger.info("Reached end of queue, not enqueuing")
                 return handler_input.response_builder.response
-            
-            # DON'T update index yet - wait until PlaybackStarted
-            # This way "what's playing" shows the correct current track
             
             # Get next track
             track_info = tracks[next_index]
