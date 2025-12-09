@@ -301,6 +301,93 @@ def filter_tracks_by_rating(tracks):
     return filtered_tracks
 
 
+def fetch_playlist_tracks_paginated(playlist, target_count, page_size=50):
+    """
+    Fetch tracks from a playlist using paginated requests with random page selection.
+
+    Instead of fetching all tracks and then sampling, this function:
+    1. Gets the total track count from the playlist metadata
+    2. Randomly selects which pages to fetch
+    3. Fetches only those pages from the server
+    4. Returns a combined list of tracks
+
+    This is much faster for large playlists as it avoids transferring thousands of tracks.
+
+    Args:
+        playlist: Plex Playlist object
+        target_count: Target number of tracks to fetch (will fetch slightly more to account for filtering)
+        page_size: Number of tracks per page/request (default 50)
+
+    Returns:
+        List of track objects
+    """
+    try:
+        # Get total track count from playlist metadata (leafCount is track count)
+        total_size = getattr(playlist, 'leafCount', None)
+
+        if total_size is None:
+            # Fallback: reload playlist to ensure metadata is loaded
+            playlist.reload()
+            total_size = getattr(playlist, 'leafCount', 0)
+
+        logger.info(f"Playlist '{playlist.title}' has {total_size} total tracks, target: {target_count}")
+
+        # If playlist is small enough, fetch all tracks normally
+        if total_size <= target_count:
+            logger.info(f"Playlist size ({total_size}) <= target ({target_count}), fetching all")
+            return list(playlist.items())
+
+        # Calculate pagination
+        total_pages = (total_size + page_size - 1) // page_size
+        pages_needed = (target_count + page_size - 1) // page_size
+
+        # Randomly select pages to fetch for variety across the entire playlist
+        pages_to_fetch = sorted(random.sample(range(total_pages), min(pages_needed, total_pages)))
+
+        logger.info(f"Fetching {len(pages_to_fetch)} random pages out of {total_pages} total (page_size={page_size})")
+
+        all_tracks = []
+        server = playlist._server
+
+        for page_num in pages_to_fetch:
+            start_index = page_num * page_size
+
+            # Build paginated URL using Plex container parameters
+            # The playlist key typically looks like /playlists/12345/items
+            base_key = playlist.key
+            paginated_key = f"{base_key}?X-Plex-Container-Start={start_index}&X-Plex-Container-Size={page_size}"
+
+            try:
+                page_tracks = server.fetchItems(paginated_key)
+                all_tracks.extend(page_tracks)
+                logger.info(f"Fetched page {page_num}: {len(page_tracks)} tracks (total so far: {len(all_tracks)})")
+            except (SSLError, ConnectionError, Timeout) as e:
+                # Retry logic for transient errors
+                logger.warning(f"Connection error fetching page {page_num}, retrying: {e}")
+                time.sleep(1)
+                try:
+                    page_tracks = server.fetchItems(paginated_key)
+                    all_tracks.extend(page_tracks)
+                except Exception as retry_error:
+                    logger.warning(f"Retry failed for page {page_num}: {retry_error}")
+                    continue
+            except Exception as page_error:
+                logger.warning(f"Error fetching page {page_num}: {page_error}")
+                continue
+
+            # Stop early if we have enough tracks
+            if len(all_tracks) >= target_count:
+                break
+
+        logger.info(f"Paginated fetch complete: {len(all_tracks)} tracks fetched (target was {target_count})")
+        return all_tracks
+
+    except Exception as e:
+        logger.warning(f"Paginated fetch failed, falling back to full fetch: {e}")
+        # Fallback to fetching all tracks (original behavior)
+        return list(playlist.items())
+
+
 def plex_api_call_with_retry(func, *args, max_retries=3, **kwargs):
     """
     Execute a Plex API call with retry logic for transient connection errors.
@@ -474,18 +561,17 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                             break
 
                     if matching_playlist:
-                        # Get playlist tracks and filter out 1-star songs
-                        all_tracks = list(matching_playlist.items())
-                        total_tracks = len(all_tracks)
+                        # Use paginated fetch with random page selection for efficiency
+                        # This fetches only the pages we need instead of all tracks
+                        # Request 2x MAX_TRACKS to account for 1-star filtering losses
+                        target_fetch = MAX_TRACKS * 2
+                        all_tracks = fetch_playlist_tracks_paginated(matching_playlist, target_fetch)
 
-                        # Apply limit BEFORE filtering to reduce processing time
-                        # We take more than MAX_TRACKS initially since some may be filtered out
-                        # Randomly sample from entire playlist so all tracks have a chance to be played
-                        if total_tracks > MAX_TRACKS * 2:
-                            tracks_to_filter = random.sample(all_tracks, MAX_TRACKS * 2)
-                        else:
-                            tracks_to_filter = all_tracks
-                        filtered_tracks = filter_tracks_by_rating(tracks_to_filter)
+                        # Get total track count from playlist metadata for speech text
+                        total_tracks = getattr(matching_playlist, 'leafCount', len(all_tracks))
+
+                        # Filter out 1-star songs and apply final limit
+                        filtered_tracks = filter_tracks_by_rating(all_tracks)
                         tracks_to_play = filtered_tracks[:MAX_TRACKS]
 
                         if total_tracks > MAX_TRACKS:
