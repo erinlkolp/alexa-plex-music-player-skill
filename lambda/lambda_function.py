@@ -352,13 +352,13 @@ def fetch_playlist_tracks_paginated(playlist, target_count, page_size=50):
         for page_num in pages_to_fetch:
             start_index = page_num * page_size
 
-            # Build paginated URL using Plex container parameters
-            # playlist.key is /playlists/12345, items are at /playlists/12345/items
-            items_key = f"{playlist.key}/items"
-            paginated_key = f"{items_key}?X-Plex-Container-Start={start_index}&X-Plex-Container-Size={page_size}"
-
             try:
-                page_tracks = server.fetchItems(paginated_key)
+                # Use fetchItems with explicit container kwargs for pagination
+                # PlexAPI passes these as query parameters to the Plex server
+                page_tracks = playlist.items(
+                    **{'X-Plex-Container-Start': start_index, 'X-Plex-Container-Size': page_size}
+                )
+                page_tracks = list(page_tracks)
                 all_tracks.extend(page_tracks)
                 logger.info(f"Fetched page {page_num} (start={start_index}): {len(page_tracks)} tracks (total so far: {len(all_tracks)})")
             except (SSLError, ConnectionError, Timeout) as e:
@@ -366,7 +366,10 @@ def fetch_playlist_tracks_paginated(playlist, target_count, page_size=50):
                 logger.warning(f"Connection error fetching page {page_num}, retrying: {e}")
                 time.sleep(1)
                 try:
-                    page_tracks = server.fetchItems(paginated_key)
+                    page_tracks = playlist.items(
+                        **{'X-Plex-Container-Start': start_index, 'X-Plex-Container-Size': page_size}
+                    )
+                    page_tracks = list(page_tracks)
                     all_tracks.extend(page_tracks)
                 except Exception as retry_error:
                     logger.warning(f"Retry failed for page {page_num}: {retry_error}")
