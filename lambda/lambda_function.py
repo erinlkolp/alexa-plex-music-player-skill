@@ -270,37 +270,6 @@ def serialize_tracks_parallel(tracks, artist_name=None, max_workers=10):
     logger.info(f"Serialized {len(serialized)} tracks in parallel")
     return serialized
 
-def filter_tracks_by_rating(tracks):
-    """
-    Filter tracks to exclude 1-star rated songs.
-    Includes: 2+ star songs and unrated songs.
-    Excludes: 1-star songs (rating 2.0 on Plex's 0-10 scale).
-    """
-    filtered_tracks = []
-    for track in tracks:
-        try:
-            # Check if track has userRating attribute
-            if hasattr(track, 'userRating') and track.userRating is not None:
-                # userRating is on a 0-10 scale (1 star = 2.0, 2 stars = 4.0, etc.)
-                # Exclude 1-star songs (rating 2.0)
-                if track.userRating >= 4.0 or track.userRating == 0:
-                    # Include 2+ stars or unrated (0)
-                    filtered_tracks.append(track)
-                else:
-                    # Exclude 1-star songs
-                    logger.info(f"Filtering out 1-star track: {track.title} (rating: {track.userRating})")
-            else:
-                # Track has no rating, include it
-                filtered_tracks.append(track)
-        except Exception as e:
-            # If there's any error checking the rating, include the track to be safe
-            logger.warning(f"Error checking rating for track, including anyway: {e}")
-            filtered_tracks.append(track)
-
-    logger.info(f"Filtered tracks: {len(tracks)} -> {len(filtered_tracks)} (excluded {len(tracks) - len(filtered_tracks)} 1-star songs)")
-    return filtered_tracks
-
-
 def fetch_playlist_tracks_paginated(playlist, target_count, page_size=50):
     """
     Fetch tracks from a playlist using paginated requests with random page selection.
@@ -568,16 +537,13 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     if matching_playlist:
                         # Use paginated fetch with random page selection for efficiency
                         # This fetches only the pages we need instead of all tracks
-                        # Request 2x MAX_TRACKS to account for 1-star filtering losses
-                        target_fetch = MAX_TRACKS * 2
-                        all_tracks = fetch_playlist_tracks_paginated(matching_playlist, target_fetch)
+                        all_tracks = fetch_playlist_tracks_paginated(matching_playlist, MAX_TRACKS)
 
                         # Get total track count from playlist metadata for speech text
                         total_tracks = getattr(matching_playlist, 'leafCount', len(all_tracks))
 
-                        # Filter out 1-star songs and apply final limit
-                        filtered_tracks = filter_tracks_by_rating(all_tracks)
-                        tracks_to_play = filtered_tracks[:MAX_TRACKS]
+                        # Apply track limit
+                        tracks_to_play = all_tracks[:MAX_TRACKS]
 
                         if total_tracks > MAX_TRACKS:
                             speech_text = f"Playing {len(tracks_to_play)} randomly selected tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
@@ -597,14 +563,8 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
             elif track_name:
                 results = plex_api_call_with_retry(MUSIC.searchTracks, title=track_name)
                 if results:
-                    # Filter out 1-star songs from results
-                    filtered_results = filter_tracks_by_rating(results)
-                    if filtered_results:
-                        tracks_to_play = [filtered_results[0]]
-                        speech_text = f"Playing {filtered_results[0].title} by {filtered_results[0].artist().title}."
-                    else:
-                        speech_text = f"I found {track_name}, but it's rated 1 star. Skipping."
-                        return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
+                    tracks_to_play = [results[0]]
+                    speech_text = f"Playing {results[0].title} by {results[0].artist().title}."
                 else:
                     speech_text = f"I couldn't find the track {track_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
@@ -621,8 +581,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     except Exception:
                         cached_artist_name = None
 
-                    # Filter out 1-star songs
-                    tracks_to_play = filter_tracks_by_rating(all_album_tracks)[:MAX_TRACKS]
+                    tracks_to_play = all_album_tracks[:MAX_TRACKS]
                     speech_text = f"Playing the album {album.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling the album {album.title}."
@@ -659,9 +618,7 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
 
                     logger.info(f"Artist tracks: {total_tracks} total, {len(unique_tracks)} unique (after early limit)")
 
-                    # Filter out 1-star songs and apply final limit
-                    filtered_artist_tracks = filter_tracks_by_rating(unique_tracks)
-                    tracks_to_play = filtered_artist_tracks[:MAX_TRACKS]
+                    tracks_to_play = unique_tracks[:MAX_TRACKS]
                     speech_text = f"Playing music by {artist.title}."
                     if should_shuffle:
                         speech_text = f"Shuffling music by {artist.title}."
