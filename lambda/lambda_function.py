@@ -349,16 +349,20 @@ def fetch_playlist_tracks_paginated(playlist, target_count, page_size=50):
         all_tracks = []
         server = playlist._server
 
+        # The playlist items endpoint - playlist.key is /playlists/ID, items are at /playlists/ID/items
+        items_endpoint = f"{playlist.key}/items"
+
         for page_num in pages_to_fetch:
             start_index = page_num * page_size
 
+            # Construct URL with Plex pagination parameters
+            paginated_url = f"{items_endpoint}?X-Plex-Container-Start={start_index}&X-Plex-Container-Size={page_size}"
+
             try:
-                # Use fetchItems with explicit container kwargs for pagination
-                # PlexAPI passes these as query parameters to the Plex server
-                page_tracks = playlist.items(
-                    **{'X-Plex-Container-Start': start_index, 'X-Plex-Container-Size': page_size}
-                )
-                page_tracks = list(page_tracks)
+                # Use server.query() to get raw XML, then findItems to parse tracks
+                from plexapi.base import PlexObject
+                response = server.query(paginated_url)
+                page_tracks = PlexObject.findItems(server, response)
                 all_tracks.extend(page_tracks)
                 logger.info(f"Fetched page {page_num} (start={start_index}): {len(page_tracks)} tracks (total so far: {len(all_tracks)})")
             except (SSLError, ConnectionError, Timeout) as e:
@@ -366,10 +370,8 @@ def fetch_playlist_tracks_paginated(playlist, target_count, page_size=50):
                 logger.warning(f"Connection error fetching page {page_num}, retrying: {e}")
                 time.sleep(1)
                 try:
-                    page_tracks = playlist.items(
-                        **{'X-Plex-Container-Start': start_index, 'X-Plex-Container-Size': page_size}
-                    )
-                    page_tracks = list(page_tracks)
+                    response = server.query(paginated_url)
+                    page_tracks = PlexObject.findItems(server, response)
                     all_tracks.extend(page_tracks)
                 except Exception as retry_error:
                     logger.warning(f"Retry failed for page {page_num}: {retry_error}")
