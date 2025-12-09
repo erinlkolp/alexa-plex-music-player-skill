@@ -480,12 +480,16 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
 
                         # Apply limit BEFORE filtering to reduce processing time
                         # We take more than MAX_TRACKS initially since some may be filtered out
-                        tracks_to_filter = all_tracks[:MAX_TRACKS * 2] if total_tracks > MAX_TRACKS else all_tracks
+                        # Randomly sample from entire playlist so all tracks have a chance to be played
+                        if total_tracks > MAX_TRACKS * 2:
+                            tracks_to_filter = random.sample(all_tracks, MAX_TRACKS * 2)
+                        else:
+                            tracks_to_filter = all_tracks
                         filtered_tracks = filter_tracks_by_rating(tracks_to_filter)
                         tracks_to_play = filtered_tracks[:MAX_TRACKS]
 
                         if total_tracks > MAX_TRACKS:
-                            speech_text = f"Playing the first {len(tracks_to_play)} tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
+                            speech_text = f"Playing {len(tracks_to_play)} randomly selected tracks from playlist {matching_playlist.title}, which has {total_tracks} total tracks."
                         else:
                             speech_text = f"Playing playlist {matching_playlist.title}."
 
