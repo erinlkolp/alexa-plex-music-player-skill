@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import time
 import boto3
@@ -20,9 +21,9 @@ from ask_sdk_model.interfaces.audioplayer import (
     StopDirective
 )
 
-# Configure these with your Plex server details
-PLEX_TOKEN = "YOUR_PLEX_TOKEN"
-PLEX_SERVER_NAME = "YOUR_SERVER_NAME"
+# Plex server configuration from environment variables
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN")
+PLEX_SERVER_NAME = os.environ.get("PLEX_SERVER_NAME")
 
 # Automatically use relay URL for local playback
 USE_LOCAL_AUDIO_URL = True
