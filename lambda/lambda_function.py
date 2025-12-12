@@ -157,7 +157,8 @@ def save_queue(user_id, tracks, current_index=0, shuffle=False, serialized_track
             'user_id': user_id,
             'tracks': track_data,
             'current_index': int(current_index),
-            'shuffle': shuffle
+            'shuffle': shuffle,
+            'playback_offset': 0  # Reset offset when saving new queue
         }
         table.put_item(Item=item)
         logger.info(f"Saved queue to DynamoDB for user {user_id}: {len(track_data)} tracks, index {current_index}, shuffle {shuffle}")
