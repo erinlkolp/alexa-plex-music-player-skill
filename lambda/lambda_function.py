@@ -202,6 +202,29 @@ def update_retry_count(user_id, count):
     except Exception as e:
         logger.error(f"Error updating retry count in DynamoDB: {e}", exc_info=True)
 
+def update_playback_offset(user_id, offset):
+    """Update the playback offset (in milliseconds) for resume functionality."""
+    try:
+        table.update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET playback_offset = :offset',
+            ExpressionAttributeValues={':offset': int(offset)}
+        )
+        logger.info(f"Updated playback offset for user {user_id} to {offset}ms")
+    except Exception as e:
+        logger.error(f"Error updating playback offset in DynamoDB: {e}", exc_info=True)
+
+def clear_playback_offset(user_id):
+    """Clear the playback offset after resuming or starting fresh."""
+    try:
+        table.update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='REMOVE playback_offset'
+        )
+        logger.info(f"Cleared playback offset for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error clearing playback offset in DynamoDB: {e}", exc_info=True)
+
 def get_track_by_key(rating_key):
     try:
         return plex.fetchItem(int(rating_key))
@@ -819,7 +842,7 @@ class PreviousIntentHandler(AbstractRequestHandler):
 class PlaybackStartedHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackStarted")(handler_input)
-    
+
     def handle(self, handler_input):
         logger.info("Playback started")
 
@@ -836,6 +859,11 @@ class PlaybackStartedHandler(AbstractRequestHandler):
                 if queue_data.get('retry_count', 0) > 0:
                     update_retry_count(user_id, 0)
                     logger.info("Reset retry count to 0 after successful playback start")
+
+                # Clear playback offset since track has started/resumed
+                # This ensures the next pause saves a fresh position
+                if queue_data.get('playback_offset'):
+                    clear_playback_offset(user_id)
 
                 # Find the track in the queue by matching the token (rating key)
                 for index, track_info in enumerate(tracks):
@@ -956,9 +984,24 @@ class PlaybackFinishedHandler(AbstractRequestHandler):
 class PlaybackStoppedHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackStopped")(handler_input)
-    
+
     def handle(self, handler_input):
         logger.info("Playback stopped")
+
+        # Save the playback position for resume functionality
+        try:
+            user_id = get_user_id(handler_input)
+            request = handler_input.request_envelope.request
+
+            # Get the current playback offset from the request
+            offset = getattr(request, 'offset_in_milliseconds', 0)
+
+            if offset > 0:
+                update_playback_offset(user_id, offset)
+                logger.info(f"Saved playback offset: {offset}ms for resume")
+        except Exception as e:
+            logger.error(f"Error saving playback offset: {e}", exc_info=True)
+
         return handler_input.response_builder.response
 
 class PlaybackFailedHandler(AbstractRequestHandler):
@@ -1083,10 +1126,62 @@ class PauseIntentHandler(AbstractRequestHandler):
 class ResumeIntentHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.ResumeIntent")(handler_input)
-    
+
     def handle(self, handler_input):
-        speech_text = "Resume is not yet implemented. Please ask me to play something."
-        return handler_input.response_builder.speak(speech_text).response
+        try:
+            user_id = get_user_id(handler_input)
+            queue_data = get_queue(user_id)
+
+            if not queue_data or not queue_data.get('tracks'):
+                speech_text = "There's nothing to resume. Please ask me to play something."
+                return handler_input.response_builder.speak(speech_text).response
+
+            current_index = int(queue_data.get('current_index', 0))
+            tracks = queue_data['tracks']
+            playback_offset = int(queue_data.get('playback_offset', 0))
+
+            if current_index >= len(tracks):
+                speech_text = "There's nothing to resume. Please ask me to play something."
+                return handler_input.response_builder.speak(speech_text).response
+
+            # Get the current track
+            track_info = tracks[current_index]
+            track = get_track_by_key(track_info['key'])
+
+            if not track:
+                speech_text = "Sorry, I couldn't load the track to resume."
+                return handler_input.response_builder.speak(speech_text).response
+
+            audio_url = get_audio_url(track)
+            logger.info(f"Resuming track: {track.title} at offset {playback_offset}ms")
+
+            metadata = AudioItemMetadata(
+                title=track.title,
+                subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
+            )
+
+            stream = Stream(
+                token=str(track.ratingKey),
+                url=audio_url,
+                offset_in_milliseconds=playback_offset
+            )
+
+            audio_item = AudioItem(
+                stream=stream,
+                metadata=metadata
+            )
+
+            play_directive = PlayDirective(
+                play_behavior=PlayBehavior.REPLACE_ALL,
+                audio_item=audio_item
+            )
+
+            return handler_input.response_builder.add_directive(play_directive).response
+
+        except Exception as e:
+            logger.error(f"Error in ResumeIntentHandler: {e}", exc_info=True)
+            speech_text = "Sorry, I had trouble resuming playback."
+            return handler_input.response_builder.speak(speech_text).response
 
 class ShuffleOnIntentHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
