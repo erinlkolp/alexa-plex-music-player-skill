@@ -190,6 +190,18 @@ def update_queue_index(user_id, new_index):
     except Exception as e:
         logger.error(f"Error updating queue index in DynamoDB: {e}", exc_info=True)
 
+def update_retry_count(user_id, count):
+    """Update the retry count for playback failures in DynamoDB."""
+    try:
+        table.update_item(
+            Key={'user_id': user_id},
+            UpdateExpression='SET retry_count = :count',
+            ExpressionAttributeValues={':count': int(count)}
+        )
+        logger.info(f"Updated retry count for user {user_id} to {count}")
+    except Exception as e:
+        logger.error(f"Error updating retry count in DynamoDB: {e}", exc_info=True)
+
 def get_track_by_key(rating_key):
     try:
         return plex.fetchItem(int(rating_key))
@@ -810,21 +822,26 @@ class PlaybackStartedHandler(AbstractRequestHandler):
     
     def handle(self, handler_input):
         logger.info("Playback started")
-        
+
         # Update the index when a new track actually starts playing
         try:
             current_token = handler_input.request_envelope.request.token
             user_id = get_user_id(handler_input)
             queue_data = get_queue(user_id)
-            
+
             if queue_data and queue_data.get('tracks'):
                 tracks = queue_data['tracks']
-                
+
+                # Reset retry count on successful playback start
+                if queue_data.get('retry_count', 0) > 0:
+                    update_retry_count(user_id, 0)
+                    logger.info("Reset retry count to 0 after successful playback start")
+
                 # Find the track in the queue by matching the token (rating key)
                 for index, track_info in enumerate(tracks):
                     if str(track_info['key']) == str(current_token):
                         current_queue_index = int(queue_data.get('current_index', 0))
-                        
+
                         # Only update if this is a different track
                         if index != current_queue_index:
                             update_queue_index(user_id, index)
@@ -832,7 +849,7 @@ class PlaybackStartedHandler(AbstractRequestHandler):
                         break
         except Exception as e:
             logger.error(f"Error updating index in PlaybackStarted: {e}", exc_info=True)
-        
+
         return handler_input.response_builder.response
 
 class PlaybackNearlyFinishedHandler(AbstractRequestHandler):
@@ -945,73 +962,115 @@ class PlaybackStoppedHandler(AbstractRequestHandler):
         return handler_input.response_builder.response
 
 class PlaybackFailedHandler(AbstractRequestHandler):
+    MAX_PLAYBACK_RETRIES = 5
+
     def can_handle(self, handler_input):
         return is_request_type("AudioPlayer.PlaybackFailed")(handler_input)
-    
+
     def handle(self, handler_input):
         error = handler_input.request_envelope.request.error
         logger.error(f"Playback failed: {error}")
-        
+
         # Check if it's a service unavailable error
         if error and hasattr(error, 'type') and 'SERVICE_UNAVAILABLE' in str(error.type):
-            logger.info("Service unavailable error detected, attempting to skip to next track")
-            
+            logger.info("Service unavailable error detected, attempting retry")
+
             try:
                 user_id = get_user_id(handler_input)
                 queue_data = get_queue(user_id)
-                
+
                 if queue_data and queue_data.get('tracks'):
                     current_index = int(queue_data.get('current_index', 0))
+                    retry_count = int(queue_data.get('retry_count', 0))
                     tracks = queue_data['tracks']
-                    
-                    # Try next track
-                    next_index = current_index + 1
-                    
-                    if next_index < len(tracks):
-                        logger.info(f"Retrying with next track at index {next_index}")
-                        
-                        # Update index
-                        update_queue_index(user_id, next_index)
-                        
-                        # Get next track
-                        track_info = tracks[next_index]
+
+                    # Check if we should retry the current track or skip to next
+                    if retry_count < self.MAX_PLAYBACK_RETRIES:
+                        # Retry the current track
+                        new_retry_count = retry_count + 1
+                        update_retry_count(user_id, new_retry_count)
+                        logger.info(f"Retrying current track (attempt {new_retry_count}/{self.MAX_PLAYBACK_RETRIES})")
+
+                        track_info = tracks[current_index]
                         track = get_track_by_key(track_info['key'])
-                        
+
                         if track:
                             audio_url = get_audio_url(track)
-                            logger.info(f"Retry: Playing track {track.title}")
-                            
+                            logger.info(f"Retry: Playing track {track.title} (attempt {new_retry_count})")
+
                             metadata = AudioItemMetadata(
                                 title=track.title,
                                 subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
                             )
-                            
+
                             stream = Stream(
                                 token=str(track.ratingKey),
                                 url=audio_url,
                                 offset_in_milliseconds=0
                             )
-                            
+
                             audio_item = AudioItem(
                                 stream=stream,
                                 metadata=metadata
                             )
-                            
+
                             play_directive = PlayDirective(
                                 play_behavior=PlayBehavior.REPLACE_ALL,
                                 audio_item=audio_item
                             )
-                            
+
                             return handler_input.response_builder.add_directive(play_directive).response
                         else:
-                            logger.error("Could not fetch next track for retry")
+                            logger.error("Could not fetch current track for retry")
                     else:
-                        logger.info("No more tracks to retry, end of queue")
+                        # Max retries reached, skip to next track
+                        logger.info(f"Max retries ({self.MAX_PLAYBACK_RETRIES}) reached, skipping to next track")
+                        update_retry_count(user_id, 0)  # Reset retry count
+
+                        next_index = current_index + 1
+
+                        if next_index < len(tracks):
+                            logger.info(f"Skipping to next track at index {next_index}")
+                            update_queue_index(user_id, next_index)
+
+                            track_info = tracks[next_index]
+                            track = get_track_by_key(track_info['key'])
+
+                            if track:
+                                audio_url = get_audio_url(track)
+                                logger.info(f"Playing next track: {track.title}")
+
+                                metadata = AudioItemMetadata(
+                                    title=track.title,
+                                    subtitle=track.artist().title if hasattr(track, 'artist') else "Unknown Artist"
+                                )
+
+                                stream = Stream(
+                                    token=str(track.ratingKey),
+                                    url=audio_url,
+                                    offset_in_milliseconds=0
+                                )
+
+                                audio_item = AudioItem(
+                                    stream=stream,
+                                    metadata=metadata
+                                )
+
+                                play_directive = PlayDirective(
+                                    play_behavior=PlayBehavior.REPLACE_ALL,
+                                    audio_item=audio_item
+                                )
+
+                                return handler_input.response_builder.add_directive(play_directive).response
+                            else:
+                                logger.error("Could not fetch next track")
+                        else:
+                            logger.info("No more tracks in queue, end of playback")
                 else:
                     logger.info("No queue available for retry")
             except Exception as e:
                 logger.error(f"Error during playback retry: {e}", exc_info=True)
-        
+
         return handler_input.response_builder.response
 
 class PauseIntentHandler(AbstractRequestHandler):
