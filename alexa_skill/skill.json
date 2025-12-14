@@ -1,0 +1,61 @@
+{
+    "manifest": {
+        "manifestVersion": "1.0",
+        "publishingInformation": {
+            "locales": {
+                "en-US": {
+                    "summary": "Play music from your Plex Media Server using Alexa voice commands",
+                    "description": "Control your Plex music library with voice commands. Play artists, albums, tracks, and playlists. Supports shuffle, skip, pause, resume, and song rating features.",
+                    "name": "Plex Music Server",
+                    "smallIconUri": "https://via.placeholder.com/108x108.png?text=Plex",
+                    "largeIconUri": "https://via.placeholder.com/512x512.png?text=Plex",
+                    "examplePhrases": [
+                        "Alexa, open plex music server",
+                        "Alexa, ask plex music server to play The Beatles",
+                        "Alexa, ask plex music server to shuffle my favorites playlist"
+                    ],
+                    "keywords": [
+                        "plex",
+                        "music",
+                        "streaming",
+                        "audio",
+                        "media server"
+                    ]
+                }
+            },
+            "isAvailableWorldwide": false,
+            "testingInstructions": "Configure your Plex server token and server name in the Lambda environment variables.",
+            "category": "MUSIC_AND_AUDIO",
+            "distributionCountries": [
+                "US"
+            ]
+        },
+        "apis": {
+            "custom": {
+                "endpoint": {
+                    "sourceDir": "lambda",
+                    "uri": "arn:aws:lambda:us-east-1:XXXXXXXXXXXX:function:PlexAlexaSkill"
+                },
+                "interfaces": [
+                    {
+                        "type": "AUDIO_PLAYER"
+                    }
+                ]
+            }
+        },
+        "permissions": [],
+        "privacyAndCompliance": {
+            "allowsPurchases": false,
+            "usesPersonalInfo": false,
+            "isChildDirected": false,
+            "isExportCompliant": true,
+            "containsAds": false,
+            "locales": {
+                "en-US": {
+                    "privacyPolicyUrl": "",
+                    "termsOfUseUrl": ""
+                }
+            }
+        }
+    }
+}
