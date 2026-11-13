@@ -78,6 +78,7 @@
                     "samples": [
                         "play the song {track}",
                         "play the song {track} by {artist}",
+                        "play {track} by {artist}",
                         "play the album {album}",
                         "play the album {album} by {artist}",
                         "play music by the artist {artist}",
