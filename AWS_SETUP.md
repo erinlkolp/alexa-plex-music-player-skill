@@ -11,7 +11,8 @@ This guide provides step-by-step instructions for setting up all AWS components 
 5. [Step 4: Create Alexa Skill](#step-4-create-alexa-skill)
 6. [Step 5: Configure Lambda Trigger](#step-5-configure-lambda-trigger)
 7. [Step 6: Test Your Skill](#step-6-test-your-skill)
-8. [Troubleshooting](#troubleshooting)
+8. [Updating Your Skill](#updating-your-skill)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -133,25 +134,20 @@ The Lambda function contains the core logic for the Alexa skill.
      ```
    - Save the file
 
-3. **Install Dependencies**
+3. **Build the Deployment Package**
    ```bash
-   cd lambda/
-   pip install -r requirements.txt -t ./
+   # From the project root
+   ./build.sh
    ```
 
-   This installs:
+   This creates `lambda-deployment.zip` containing your code and its dependencies:
    - `plexapi` - Plex API client
    - `ask-sdk-core` - Alexa Skills Kit SDK
    - `boto3` - AWS SDK (for DynamoDB)
 
-4. **Create Deployment Package**
-   ```bash
-   # Make sure you're in the lambda/ directory
-   zip -r ../lambda-deployment.zip ./*
-   cd ..
-   ```
-
-   This creates `lambda-deployment.zip` containing your code and all dependencies.
+   Dependencies are downloaded as Linux packages for the Lambda runtime, so this works on macOS too.
+   The script assumes Python 3.12 on x86_64 (matching the settings below). If you pick a different
+   runtime or architecture, pass it along, e.g. `PYTHON_VERSION=3.13 ARCH=aarch64 ./build.sh`.
 
 ### Part B: Create the Lambda Function
 
@@ -353,6 +349,51 @@ Now connect the Lambda function to the Alexa skill.
    - Say: *"Play The Beatles"*
    - Say: *"What's playing?"*
    - Say: *"Next"*
+
+---
+
+## Updating Your Skill
+
+After the first setup, you can deploy code changes from the command line instead of uploading through the console.
+
+### One-Time Setup: AWS CLI
+
+1. **Install the AWS CLI**
+   ```bash
+   brew install awscli
+   ```
+   (Not on a Mac? See the [AWS CLI install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).)
+
+2. **Create an Access Key**
+   - In the [IAM Console](https://console.aws.amazon.com/iam/), create (or pick) an IAM user for deployments
+   - Give it permission to update your function, e.g. attach a policy allowing `lambda:UpdateFunctionCode` and `lambda:GetFunctionConfiguration` on your function's ARN
+   - Under the user's **Security credentials** tab, click **"Create access key"** and choose **"Command Line Interface (CLI)"**
+
+3. **Configure the CLI**
+   ```bash
+   aws configure
+   ```
+   Enter the access key, secret key, and the region your Lambda function is in (e.g. `us-east-1`).
+
+### Deploy
+
+From the project root:
+```bash
+./deploy.sh
+```
+
+This runs `build.sh` to create `lambda-deployment.zip`, uploads it to your Lambda function, and waits for the update to finish.
+
+The script assumes your function is named `PlexAlexaMusicSkill`. If yours is different, set `FUNCTION_NAME`:
+```bash
+FUNCTION_NAME=MyFunctionName ./deploy.sh
+```
+
+`PYTHON_VERSION` and `ARCH` are passed through to `build.sh`, and the standard `AWS_PROFILE` / `AWS_REGION` variables are respected if you use multiple AWS accounts or regions.
+
+### Interaction Model Changes
+
+`deploy.sh` only updates the Lambda code. If you change `alexa_skill/intent_model.json`, paste it into the JSON Editor in the [Alexa Developer Console](https://developer.amazon.com/alexa/console/ask) and click **"Build Model"** (see [Step 4, Part C](#part-c-configure-interaction-model)).
 
 ---
 
