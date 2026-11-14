@@ -647,12 +647,15 @@ class LaunchRequestHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
 
 class PlayMusicIntentHandler(AbstractRequestHandler):
+    """Handles both "play X" (PlayMusicIntent) and "shuffle X" (ShuffleMusicIntent)."""
+
     def can_handle(self, handler_input):
-        return is_intent_name("PlayMusicIntent")(handler_input)
+        return (is_intent_name("PlayMusicIntent")(handler_input) or
+                is_intent_name("ShuffleMusicIntent")(handler_input))
 
     def handle(self, handler_input):
         speech_text = "Sorry, something went wrong."
-        
+
         try:
             slots = handler_input.request_envelope.request.intent.slots
             user_id = get_user_id(handler_input)
@@ -707,8 +710,9 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
 
             logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}, Playlist: {playlist_name}")
 
-            # Check if shuffle is requested (from utterance like "shuffle artist")
-            should_shuffle = "shuffle" in str(handler_input.request_envelope.request.intent).lower()
+            # "shuffle X" utterances are routed to their own intent. (The request
+            # doesn't include the spoken words, so the intent name is the only signal.)
+            should_shuffle = is_intent_name("ShuffleMusicIntent")(handler_input)
             
             logger.info(f"Shuffle requested: {should_shuffle}")
 
