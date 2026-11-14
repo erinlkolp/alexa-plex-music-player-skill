@@ -13,7 +13,7 @@
 #   AWS_REGION      Region the function lives in (default: your CLI's configured region)
 #
 # Requires the AWS CLI, configured with credentials allowed to update the function:
-#   brew install awscli && aws configure
+#   https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ FUNCTION_NAME="${FUNCTION_NAME:-PlexAlexaMusicSkill}"
 ZIP_FILE="lambda-deployment.zip"
 
 if ! command -v aws >/dev/null 2>&1; then
-    echo "Error: the AWS CLI isn't installed. Install it with 'brew install awscli', then run 'aws configure'." >&2
+    echo "Error: the AWS CLI isn't installed. See https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html, then run 'aws configure'." >&2
     exit 1
 fi
 

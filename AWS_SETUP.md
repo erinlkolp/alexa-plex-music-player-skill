@@ -359,10 +359,8 @@ After the first setup, you can deploy code changes from the command line instead
 ### One-Time Setup: AWS CLI
 
 1. **Install the AWS CLI**
-   ```bash
-   brew install awscli
-   ```
-   (Not on a Mac? See the [AWS CLI install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).)
+   - Follow the [AWS CLI install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) for your operating system
+   - Verify it's installed by running `aws --version`
 
 2. **Create an Access Key**
    - In the [IAM Console](https://console.aws.amazon.com/iam/), create (or pick) an IAM user for deployments
