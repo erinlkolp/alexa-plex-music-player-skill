@@ -23,17 +23,19 @@ This is an Alexa skill that allows playback of audio from Plex Music libraries o
 
 1. Create a new AWS Lambda using the latest Python runtime
 2. Copy and paste your `PLEX_TOKEN` and `PLEX_SERVER_NAME` into the `lambda_function.py` code
-3. Prepare dependencies:
+3. Build the deployment package (installs dependencies and creates `lambda-deployment.zip`):
    ```bash
-   cd lambda/
-   pip install -r requirements.txt -t ./
+   ./build.sh
    ```
-4. Create the deployment package:
-   ```bash
-   zip -r ../archive.zip ./*
-   ```
-5. Upload `archive.zip` to the AWS Lambda Console
-6. Deploy your new code!
+   The script targets the Python 3.12 / x86_64 Lambda runtime by default. For a different runtime, set `PYTHON_VERSION` and/or `ARCH`, e.g. `PYTHON_VERSION=3.13 ARCH=aarch64 ./build.sh`.
+4. Upload `lambda-deployment.zip` to the AWS Lambda Console
+5. Deploy your new code!
+
+To deploy later changes from the command line, install and configure the [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), then run:
+```bash
+./deploy.sh
+```
+This builds the package and uploads it to the function named `PlexAlexaMusicSkill` (override with `FUNCTION_NAME=YourFunction ./deploy.sh`). See [Updating Your Skill](AWS_SETUP.md#updating-your-skill) for details.
 
 Examples of successful invocations:
 

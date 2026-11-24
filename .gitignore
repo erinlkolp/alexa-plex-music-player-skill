@@ -23,3 +23,7 @@ Thumbs.db
 
 # AWS
 .aws-sam/
+
+# Build output (see build.sh)
+build/
+lambda-deployment.zip

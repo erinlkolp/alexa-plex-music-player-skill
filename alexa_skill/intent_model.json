@@ -78,6 +78,7 @@
                     "samples": [
                         "play the song {track}",
                         "play the song {track} by {artist}",
+                        "play {track} by {artist}",
                         "play the album {album}",
                         "play the album {album} by {artist}",
                         "play music by the artist {artist}",
@@ -87,10 +88,35 @@
                         "play {track}",
                         "play playlist {playlist}",
                         "play the playlist {playlist}",
-                        "play my {playlist} playlist",
+                        "play my {playlist} playlist"
+                    ]
+                },
+                {
+                    "name": "ShuffleMusicIntent",
+                    "slots": [
+                        {
+                            "name": "artist",
+                            "type": "CUSTOM_ARTIST"
+                        },
+                        {
+                            "name": "album",
+                            "type": "CUSTOM_ALBUM"
+                        },
+                        {
+                            "name": "playlist",
+                            "type": "CUSTOM_PLAYLIST"
+                        }
+                    ],
+                    "samples": [
                         "shuffle {artist}",
-                        "shuffle {album}",
-                        "shuffle playlist {playlist}"
+                        "shuffle music by {artist}",
+                        "shuffle songs by {artist}",
+                        "shuffle the album {album}",
+                        "shuffle the album {album} by {artist}",
+                        "shuffle {album} by {artist}",
+                        "shuffle playlist {playlist}",
+                        "shuffle the playlist {playlist}",
+                        "shuffle my {playlist} playlist"
                     ]
                 },
                 {

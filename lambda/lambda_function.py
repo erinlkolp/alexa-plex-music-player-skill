@@ -6,7 +6,7 @@ import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import SSLError, ConnectionError, Timeout
 from decimal import Decimal
-from difflib import get_close_matches
+from difflib import get_close_matches, SequenceMatcher
 from plexapi.server import PlexServer
 from ask_sdk_core.skill_builder import CustomSkillBuilder
 from ask_sdk_core.handler_input import HandlerInput
@@ -487,6 +487,144 @@ def fuzzy_match_artist(spoken_name):
         logger.info(f"No fuzzy match found for '{spoken_name}', using original")
         return spoken_name
 
+
+# Minimum score for a playlist/album/track to win a bare "play X" request
+MATCH_CUTOFF = 0.75
+# A non-artist match must beat the best artist score by this much; ties go to the artist
+ARTIST_PREFERENCE_MARGIN = 0.05
+# Artist-name score at which a track/album counts as "by" the requested artist
+ARTIST_FILTER_CUTOFF = 0.75
+# Max search results to score when looking up tracks/albums by title
+SEARCH_RESULT_LIMIT = 50
+# Tie-break order when a playlist, album and track score equally
+KIND_PRIORITY = {'playlist': 3, 'album': 2, 'track': 1}
+
+
+def _normalize_name(name):
+    """Lowercase, trim, and drop a leading 'the ' so 'beatles' matches 'The Beatles'."""
+    name = (name or "").lower().strip()
+    if name.startswith("the "):
+        name = name[4:]
+    return name
+
+
+def name_match_score(spoken, candidate):
+    """
+    Score how well a spoken name matches a library name, from 0.0 to 1.0.
+    Exact match = 1.0; library name starts with the spoken words (e.g.
+    'Snowman (Live)' for 'snowman') = 0.9; otherwise difflib similarity ratio.
+    """
+    s = _normalize_name(spoken)
+    c = _normalize_name(candidate)
+    if not s or not c:
+        return 0.0
+    if s == c:
+        return 1.0
+    if c.startswith(s) and not c[len(s)].isalnum():
+        return 0.9
+    return SequenceMatcher(None, s, c).ratio()
+
+
+def best_artist_score(spoken_name):
+    """Return the best match score for spoken_name against all Plex artists."""
+    if spoken_name.lower() in ARTIST_MAPPINGS:
+        return 1.0
+    artists = load_artist_cache()
+    return max((name_match_score(spoken_name, a) for a in artists), default=0.0)
+
+
+def best_playlist_match(spoken_name):
+    """Return (playlist, score) for the best-matching audio playlist, or (None, 0.0)."""
+    playlists = plex_api_call_with_retry(plex.playlists)
+    best, best_score = None, 0.0
+    for playlist in playlists:
+        if getattr(playlist, 'playlistType', 'audio') != 'audio':
+            continue
+        score = name_match_score(spoken_name, playlist.title)
+        if score > best_score:
+            best, best_score = playlist, score
+    return best, best_score
+
+
+def _pick_best_by_title_and_artist(items, title, artist_name, artist_attrs):
+    """
+    Choose the item whose title best matches `title`. If artist_name is given,
+    items by that artist (any of artist_attrs scoring >= ARTIST_FILTER_CUTOFF)
+    win over items by other artists. Returns (item, title_score) or (None, 0.0).
+    """
+    best, best_key, best_title_score = None, None, 0.0
+    for item in items:
+        title_score = name_match_score(title, item.title)
+        artist_score = 0.0
+        if artist_name:
+            artist_score = max(
+                (name_match_score(artist_name, getattr(item, attr, None)) for attr in artist_attrs),
+                default=0.0,
+            )
+        key = (artist_score >= ARTIST_FILTER_CUTOFF, title_score, artist_score)
+        # Strict '>' keeps Plex's ordering on ties
+        if best_key is None or key > best_key:
+            best, best_key, best_title_score = item, key, title_score
+    return best, best_title_score
+
+
+def find_best_track(title, artist_name=None):
+    """Search tracks by title; return (track, title_score), preferring the given artist."""
+    results = plex_api_call_with_retry(MUSIC.searchTracks, title=title, maxresults=SEARCH_RESULT_LIMIT)
+    # grandparentTitle = album artist; originalTitle = track artist on compilations
+    return _pick_best_by_title_and_artist(results, title, artist_name, ('grandparentTitle', 'originalTitle'))
+
+
+def find_best_album(title, artist_name=None):
+    """Search albums by title; return (album, title_score), preferring the given artist."""
+    results = plex_api_call_with_retry(MUSIC.searchAlbums, title=title, maxresults=SEARCH_RESULT_LIMIT)
+    return _pick_best_by_title_and_artist(results, title, artist_name, ('parentTitle',))
+
+
+def resolve_ambiguous_play_request(spoken_name):
+    """
+    For a bare "play X" request (Alexa filled only the artist slot), decide whether
+    X is better matched by a playlist, album, or track than by an artist.
+    Returns (kind, plex_object) with kind in 'playlist'/'album'/'track',
+    or (None, None) to fall through to the normal artist search.
+    """
+    try:
+        artist_score = best_artist_score(spoken_name)
+        if artist_score + ARTIST_PREFERENCE_MARGIN >= 1.0:
+            # Nothing can beat a (near-)exact artist match; skip the extra searches
+            return None, None
+
+        lookups = {
+            'playlist': lambda: best_playlist_match(spoken_name),
+            'album': lambda: find_best_album(spoken_name),
+            'track': lambda: find_best_track(spoken_name),
+        }
+        candidates = []
+        with ThreadPoolExecutor(max_workers=len(lookups)) as executor:
+            futures = {executor.submit(fn): kind for kind, fn in lookups.items()}
+            for future in as_completed(futures):
+                kind = futures[future]
+                try:
+                    obj, score = future.result()
+                except Exception as e:
+                    logger.warning(f"{kind} lookup failed for '{spoken_name}': {e}")
+                    continue
+                if obj is not None:
+                    candidates.append((score, KIND_PRIORITY[kind], kind, obj))
+
+        candidates.sort(key=lambda c: c[:2], reverse=True)
+        summary = ", ".join(f"{k} '{o.title}' ({s:.2f})" for s, _, k, o in candidates)
+        logger.info(f"Ambiguous request '{spoken_name}': artist score {artist_score:.2f}; candidates: {summary or 'none'}")
+
+        if candidates:
+            score, _, kind, obj = candidates[0]
+            if score >= MATCH_CUTOFF and score > artist_score + ARTIST_PREFERENCE_MARGIN:
+                logger.info(f"Resolved '{spoken_name}' to {kind} '{obj.title}'")
+                return kind, obj
+    except Exception as e:
+        logger.warning(f"Ambiguous-request resolution failed for '{spoken_name}': {e}")
+    return None, None
+
 class LaunchRequestHandler(AbstractRequestHandler):
     def can_handle(self, handler_input):
         return is_request_type("LaunchRequest")(handler_input)
@@ -509,12 +647,15 @@ class LaunchRequestHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
 
 class PlayMusicIntentHandler(AbstractRequestHandler):
+    """Handles both "play X" (PlayMusicIntent) and "shuffle X" (ShuffleMusicIntent)."""
+
     def can_handle(self, handler_input):
-        return is_intent_name("PlayMusicIntent")(handler_input)
+        return (is_intent_name("PlayMusicIntent")(handler_input) or
+                is_intent_name("ShuffleMusicIntent")(handler_input))
 
     def handle(self, handler_input):
         speech_text = "Sorry, something went wrong."
-        
+
         try:
             slots = handler_input.request_envelope.request.intent.slots
             user_id = get_user_id(handler_input)
@@ -523,13 +664,15 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
             album_name = None
             track_name = None
             playlist_name = None
-            
+            matching_playlist = None
+            matched_album = None
+            matched_track = None
+            spoken_artist = None
+
             if slots and "artist" in slots:
                 slot = slots["artist"]
                 if slot and hasattr(slot, 'value') and slot.value:
-                    artist_name = slot.value
-                    # Use fuzzy matching to find closest artist in Plex
-                    artist_name = fuzzy_match_artist(artist_name)
+                    spoken_artist = slot.value
                     
             if slots and "album" in slots:
                 slot = slots["album"]
@@ -545,11 +688,31 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                 slot = slots["playlist"]
                 if slot and hasattr(slot, 'value') and slot.value:
                     playlist_name = slot.value
-            
+
+            if spoken_artist:
+                # "play X" usually fills only the artist slot. If X is a much better
+                # match for a playlist, album, or song than any artist, play that instead.
+                resolved_kind, resolved_obj = None, None
+                if not (album_name or track_name or playlist_name) and plex and MUSIC:
+                    resolved_kind, resolved_obj = resolve_ambiguous_play_request(spoken_artist)
+                if resolved_kind == 'playlist':
+                    matching_playlist = resolved_obj
+                    playlist_name = resolved_obj.title
+                elif resolved_kind == 'album':
+                    matched_album = resolved_obj
+                    album_name = resolved_obj.title
+                elif resolved_kind == 'track':
+                    matched_track = resolved_obj
+                    track_name = resolved_obj.title
+                else:
+                    # Use fuzzy matching to find closest artist in Plex
+                    artist_name = fuzzy_match_artist(spoken_artist)
+
             logger.info(f"Received request - Artist: {artist_name}, Album: {album_name}, Track: {track_name}, Playlist: {playlist_name}")
 
-            # Check if shuffle is requested (from utterance like "shuffle artist")
-            should_shuffle = "shuffle" in str(handler_input.request_envelope.request.intent).lower()
+            # "shuffle X" utterances are routed to their own intent. (The request
+            # doesn't include the spoken words, so the intent name is the only signal.)
+            should_shuffle = is_intent_name("ShuffleMusicIntent")(handler_input)
             
             logger.info(f"Shuffle requested: {should_shuffle}")
 
@@ -562,14 +725,30 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
             # Variables to store context for optimized serialization
             cached_artist_name = None
 
+            # Look up the song up front (preferring the requested artist). If there's no
+            # such song, try an album by that name: "play X by Y" lands in the track slot
+            # whether X is a song or an album.
+            if track_name and not playlist_name and not matched_track:
+                matched_track, _ = find_best_track(track_name, artist_name)
+                if not matched_track and not album_name:
+                    matched_album, _ = find_best_album(track_name, artist_name)
+                    if matched_album:
+                        logger.info(f"No track named '{track_name}'; using album '{matched_album.title}'")
+                        album_name, track_name = matched_album.title, None
+
             if playlist_name:
                 try:
-                    playlists = plex.playlists()
-                    matching_playlist = None
-                    for playlist in playlists:
-                        if playlist_name.lower() in playlist.title.lower():
-                            matching_playlist = playlist
-                            break
+                    if not matching_playlist:
+                        # Prefer the best-scoring title (so "holiday" picks "Holiday"
+                        # over "Holiday Jazz Mix"); fall back to any title containing it
+                        best, best_score = best_playlist_match(playlist_name)
+                        if best and best_score >= MATCH_CUTOFF:
+                            matching_playlist = best
+                        else:
+                            for playlist in plex.playlists():
+                                if playlist_name.lower() in playlist.title.lower():
+                                    matching_playlist = playlist
+                                    break
 
                     if matching_playlist:
                         # Use paginated fetch with random page selection for efficiency
@@ -598,18 +777,17 @@ class PlayMusicIntentHandler(AbstractRequestHandler):
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
             
             elif track_name:
-                results = plex_api_call_with_retry(MUSIC.searchTracks, title=track_name)
-                if results:
-                    tracks_to_play = [results[0]]
-                    speech_text = f"Playing {results[0].title} by {results[0].artist().title}."
+                if matched_track:
+                    tracks_to_play = [matched_track]
+                    track_artist = matched_track.originalTitle or matched_track.grandparentTitle
+                    speech_text = f"Playing {matched_track.title} by {track_artist}."
                 else:
                     speech_text = f"I couldn't find the track {track_name}."
                     return handler_input.response_builder.speak(speech_text).set_should_end_session(True).response
-                    
+
             elif album_name:
-                results = plex_api_call_with_retry(MUSIC.searchAlbums, title=album_name)
-                if results:
-                    album = results[0]
+                album = matched_album or find_best_album(album_name, artist_name)[0]
+                if album:
                     all_album_tracks = list(plex_api_call_with_retry(album.tracks))
 
                     # Cache artist name from album's parent artist for serialization optimization
